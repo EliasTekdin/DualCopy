@@ -16,19 +16,66 @@ namespace DualCopy.Windows;
 
 internal static class DualCopyAppearance
 {
-    public static readonly Color DarkBack = Color.FromArgb(30, 30, 30);
-    public static readonly Color DarkControl = Color.FromArgb(45, 45, 48);
-    public static readonly Color DarkText = Color.WhiteSmoke;
+    public static readonly Color LightBack = Color.FromArgb(244, 247, 252);
+    public static readonly Color LightSurface = Color.White;
+    public static readonly Color LightText = Color.FromArgb(28, 36, 52);
+    public static readonly Color DarkBack = Color.FromArgb(15, 23, 42);
+    public static readonly Color DarkSurface = Color.FromArgb(26, 38, 61);
+    public static readonly Color DarkText = Color.FromArgb(239, 245, 255);
+    public static readonly Color Accent = Color.FromArgb(69, 121, 255);
+    public static readonly Color AccentDark = Color.FromArgb(112, 164, 255);
 
     public static void Apply(Control control, bool dark)
     {
-        control.BackColor = dark ? DarkBack : SystemColors.Control;
-        control.ForeColor = dark ? DarkText : SystemColors.ControlText;
+        Color background = dark ? DarkBack : LightBack;
+        Color surface = dark ? DarkSurface : LightSurface;
+        Color text = dark ? DarkText : LightText;
+        Color input = dark ? Color.FromArgb(35, 50, 78) : Color.White;
+        Color buttonSurface = dark ? Color.FromArgb(47, 76, 132) : Color.FromArgb(231, 237, 250);
+        control.BackColor = control switch
+        {
+            TextBoxBase => input,
+            NumericUpDown => input,
+            ComboBox => input,
+            Button => buttonSurface,
+            GroupBox or Panel or TabControl or TabPage => surface,
+            _ => background
+        };
+        control.ForeColor = text;
+
         foreach (Control child in control.Controls)
         {
-            child.BackColor = dark && child is not Button and not CheckBox and not ComboBox ? DarkControl : (dark ? DarkControl : SystemColors.Window);
-            child.ForeColor = dark ? DarkText : SystemColors.ControlText;
-            if (child is TextBoxBase textBox) textBox.BackColor = dark ? DarkControl : SystemColors.Window;
+            child.ForeColor = text;
+            child.BackColor = child is GroupBox or Panel or TabControl or TabPage ? surface : background;
+            if (child is TextBoxBase textBox)
+            {
+                textBox.BackColor = dark ? Color.FromArgb(35, 50, 78) : Color.White;
+                textBox.ForeColor = text;
+                textBox.BorderStyle = BorderStyle.FixedSingle;
+            }
+            else if (child is NumericUpDown number)
+            {
+                number.BackColor = dark ? Color.FromArgb(35, 50, 78) : Color.White;
+                number.ForeColor = text;
+            }
+            else if (child is ComboBox combo)
+            {
+                combo.BackColor = dark ? Color.FromArgb(35, 50, 78) : Color.White;
+                combo.ForeColor = text;
+                combo.FlatStyle = FlatStyle.Flat;
+            }
+            else if (child is Button button)
+            {
+                button.BackColor = dark ? Color.FromArgb(47, 76, 132) : Color.FromArgb(231, 237, 250);
+                button.ForeColor = text;
+                button.FlatStyle = FlatStyle.Flat;
+                button.FlatAppearance.BorderColor = dark ? Color.FromArgb(91, 128, 196) : Color.FromArgb(196, 209, 235);
+            }
+            else if (child is LinkLabel link)
+            {
+                link.LinkColor = dark ? AccentDark : Accent;
+                link.ActiveLinkColor = dark ? Color.White : Color.FromArgb(35, 83, 190);
+            }
             Apply(child, dark);
         }
     }
@@ -384,8 +431,8 @@ internal sealed class ConfigureForm : Form
     private readonly CheckBox darkBox = new();
     private readonly Label statusLabel = new();
     private readonly Button testButton = new();
-    private readonly Func<string, int, Task<string>> testConnection;
     private readonly DualCopySettings initial;
+    private readonly Func<string, int, Task<string>> testConnection;
 
     public DualCopySettings SettingsValue => initial with
     {
@@ -408,48 +455,150 @@ internal sealed class ConfigureForm : Form
     {
         initial = settings;
         this.testConnection = testConnection;
-        Text = "DualCopy settings";
+        Text = "DualCopy · Settings";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = false;
         MaximizeBox = false;
-        ClientSize = new Size(590, 590);
+        AutoScaleMode = AutoScaleMode.Font;
+        ClientSize = new Size(790, 700);
+        Padding = new Padding(0);
 
-        AddLabel("iPhone IP address", 16, 18); addressBox.SetBounds(220, 14, 340, 24); addressBox.Text = settings.Address; Controls.Add(addressBox);
-        AddLabel("iPhone listening port", 16, 50); ConfigureNumber(portBox, 220, 46, 65535, settings.Port, 100); AddControl(portBox);
-        AddLabel("Polling interval (ms)", 16, 82); ConfigureNumber(intervalBox, 220, 78, 5000, settings.PollingInterval, 100); AddControl(intervalBox);
-        AddLabel("History limit", 16, 114); ConfigureNumber(historyBox, 220, 110, 1000, settings.HistoryLimit, 10); AddControl(historyBox);
-        AddLabel("Max image bytes (0 = unlimited)", 16, 146); ConfigureNumber(imageBytesBox, 220, 142, int.MaxValue, settings.MaxImageBytes, 0); AddControl(imageBytesBox);
-        AddLabel("Max file bytes (0 = unlimited)", 16, 178); ConfigureNumber(fileBytesBox, 220, 174, int.MaxValue, settings.MaxFileBytes, 0); AddControl(fileBytesBox);
-        AddLabel("Image format", 16, 210); formatBox.SetBounds(220, 206, 120, 24); formatBox.DropDownStyle = ComboBoxStyle.DropDownList; formatBox.Items.AddRange(new object[] { "auto", "png", "jpeg" }); formatBox.SelectedItem = settings.ImageFormat; Controls.Add(formatBox);
-        AddLabel("JPEG quality", 16, 242); qualityBox.SetBounds(220, 238, 120, 24); qualityBox.DecimalPlaces = 2; qualityBox.Increment = 0.01M; qualityBox.Minimum = 0.40M; qualityBox.Maximum = 1.00M; qualityBox.Value = (decimal)Math.Clamp(settings.JpegQuality, 0.40f, 1.0f); Controls.Add(qualityBox);
-        AddLabel("Receive folder", 16, 274); folderBox.SetBounds(220, 270, 340, 24); folderBox.Text = settings.ReceiveFolder; Controls.Add(folderBox);
+        Panel header = new() { Dock = DockStyle.Top, Height = 92, Padding = new Padding(28, 18, 24, 12) };
+        Label title = new() { Text = "DualCopy", Font = new Font(Font.FontFamily, 18, FontStyle.Bold), AutoSize = true, Location = new Point(28, 15) };
+        Label subtitle = new() { Text = "A calm, reliable bridge between your iPhone and Windows clipboard", AutoSize = true, Location = new Point(30, 51) };
+        header.Controls.Add(title); header.Controls.Add(subtitle); Controls.Add(header);
 
-        imagesBox.Text = "Sync images"; imagesBox.Checked = settings.SyncImages; imagesBox.SetBounds(16, 312, 180, 24); Controls.Add(imagesBox);
-        filesBox.Text = "Sync files"; filesBox.Checked = settings.SyncFiles; filesBox.SetBounds(220, 312, 180, 24); Controls.Add(filesBox);
-        rawBox.Text = "Convert raw images when possible"; rawBox.Checked = settings.ConvertRawImages; rawBox.SetBounds(16, 344, 260, 24); Controls.Add(rawBox);
-        darkBox.Text = "Dark mode"; darkBox.Checked = settings.DarkMode; darkBox.SetBounds(220, 344, 180, 24); Controls.Add(darkBox);
+        TabControl tabs = new() { Dock = DockStyle.Fill, Padding = new Point(18, 8), Margin = new Padding(18) };
+        tabs.TabPages.Add(BuildConnectionTab());
+        tabs.TabPages.Add(BuildContentTab());
+        tabs.TabPages.Add(BuildPerformanceTab());
+        tabs.TabPages.Add(BuildAppearanceTab());
+        Controls.Add(tabs);
 
-        statusLabel.SetBounds(16, 388, 544, 38); statusLabel.AutoEllipsis = true; statusLabel.Text = "Status: " + status; Controls.Add(statusLabel);
-        testButton.Text = "Test connection"; testButton.SetBounds(16, 440, 130, 30); testButton.Click += async (_, _) =>
+        Panel footer = new() { Dock = DockStyle.Bottom, Height = 74, Padding = new Padding(24, 10, 24, 12) };
+        statusLabel.Text = "Status: " + status;
+        statusLabel.AutoEllipsis = true;
+        statusLabel.SetBounds(24, 12, 360, 24);
+        testButton.Text = "Test connection";
+        testButton.SetBounds(24, 38, 132, 28);
+        testButton.Click += async (_, _) =>
         {
             testButton.Enabled = false;
             statusLabel.Text = "Status: testing connection…";
             statusLabel.Text = "Status: " + await this.testConnection(addressBox.Text.Trim(), (int)portBox.Value);
             testButton.Enabled = true;
-        }; Controls.Add(testButton);
-        Button save = new() { Text = "Save", DialogResult = DialogResult.OK, Left = 400, Top = 530, Width = 75 };
-        Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 485, Top = 530, Width = 75 };
-        Controls.Add(save); Controls.Add(cancel); AcceptButton = save; CancelButton = cancel;
+        };
+        Button save = new() { Text = "Save changes", DialogResult = DialogResult.OK, Width = 112, Height = 30 };
+        save.Location = new Point(520, 25);
+        Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 88, Height = 30 };
+        cancel.Location = new Point(644, 25);
+        footer.Controls.Add(statusLabel); footer.Controls.Add(testButton); footer.Controls.Add(save); footer.Controls.Add(cancel);
+        Controls.Add(footer);
+        AcceptButton = save;
+        CancelButton = cancel;
+
         darkBox.CheckedChanged += (_, _) => DualCopyAppearance.Apply(this, darkBox.Checked);
         DualCopyAppearance.Apply(this, settings.DarkMode);
     }
 
-    private void AddLabel(string text, int left, int top) => Controls.Add(new Label { Text = text, Left = left, Top = top + 4, AutoSize = true });
-    private void AddControl(Control control) => Controls.Add(control);
-    private static void ConfigureNumber(NumericUpDown box, int left, int top, decimal maximum, long value, decimal minimum)
+    private TabPage BuildConnectionTab()
     {
-        box.SetBounds(left, top, 150, 24); box.Minimum = minimum; box.Maximum = maximum; box.Value = Math.Clamp((decimal)value, minimum, maximum);
+        TabPage page = NewTab("Connection");
+        page.Controls.Add(CreateSection("Phone ↔ PC connection", "Both devices use the same TCP channel. The iPhone listens for incoming connections while also connecting to this Windows address.", 310, out TableLayoutPanel table));
+        AddSetting(table, "iPhone IP address", "The iPhone’s local LAN or VPN IPv4 address. Windows uses this address when it initiates a connection. Example: 192.168.68.52.", addressBox, settingsValue: initial.Address);
+        ConfigureNumber(portBox, 1, 65535, initial.Port);
+        AddSetting(table, "iPhone listening port", "The port where the iPhone accepts DualCopy traffic. It must match the iPhone’s Listen port in Settings. The default is 49732.", portBox);
+        return page;
+    }
+
+    private TabPage BuildContentTab()
+    {
+        TabPage page = NewTab("Content");
+        FlowLayoutPanel flow = NewFlow();
+        flow.Controls.Add(CreateSection("Images", "Images are transferred as PNG, JPEG, or the smallest compatible representation. RAW conversion is best effort and never runs on the iPhone’s main UI thread.", 392, out TableLayoutPanel images));
+        imagesBox.Text = "Enable image synchronisation"; imagesBox.Checked = initial.SyncImages;
+        AddSetting(images, "Sync images", "When enabled, copied pictures travel in both directions. Disabling it prevents image data from using memory, battery, and network bandwidth.", imagesBox);
+        rawBox.Text = "Convert RAW images when possible"; rawBox.Checked = initial.ConvertRawImages;
+        AddSetting(images, "RAW conversion", "Attempts to turn DNG and other RAW camera data into a normal image. It improves compatibility, but conversion can be CPU- and memory-intensive; when decoding fails, the original file is retained.", rawBox);
+        formatBox.DropDownStyle = ComboBoxStyle.DropDownList; formatBox.Items.AddRange(new object[] { "auto", "png", "jpeg" }); formatBox.SelectedItem = initial.ImageFormat;
+        AddSetting(images, "Output image format", "Auto prefers a compatible representation and can fall back to JPEG when the size limit is reached. PNG preserves lossless detail; JPEG is smaller but lossy.", formatBox);
+        qualityBox.DecimalPlaces = 2; qualityBox.Increment = 0.01M; qualityBox.Minimum = 0.40M; qualityBox.Maximum = 1.00M; qualityBox.Value = (decimal)Math.Clamp(initial.JpegQuality, 0.40f, 1.0f);
+        AddSetting(images, "JPEG quality (0.40–1.00)", "This is a fraction, not a file size: 0.40 means roughly 40% encoder quality and smaller files with more artefacts; 0.82 is the default balance; 1.00 keeps the most detail but usually creates larger files. Values below 0.40 are raised to 0.40 and values above 1.00 are reduced to 1.00. PNG ignores this value.", qualityBox);
+        ConfigureNumber(imageBytesBox, 0, int.MaxValue, initial.MaxImageBytes);
+        AddSetting(images, "Maximum image size", "The largest encoded image DualCopy will send. Set 0 for unlimited on Windows. A limit reduces freezes and memory pressure, but an image above it will be skipped or may still be rejected by the iPhone’s own safety limit.", imageBytesBox, "bytes; 0 = unlimited");
+        flow.Controls.Add(CreateSection("Files", "Files are copied as file entries and are saved in the receive folder. This includes TXT, PDF, ZIP, DEB and DNG when the source application exposes file data.", 300, out TableLayoutPanel files));
+        filesBox.Text = "Enable file synchronisation"; filesBox.Checked = initial.SyncFiles;
+        AddSetting(files, "Sync files", "When enabled, copied files travel in both directions. Disabling it is useful when you only want text and pictures or want to reduce network traffic.", filesBox);
+        ConfigureNumber(fileBytesBox, 0, int.MaxValue, initial.MaxFileBytes);
+        AddSetting(files, "Maximum file size", "The largest file DualCopy will read and transmit. Set 0 for unlimited on Windows, but remember that very large files consume RAM and may be refused by the iPhone’s configured limit.", fileBytesBox, "bytes; 0 = unlimited");
+        folderBox.Text = initial.ReceiveFolder;
+        AddSetting(files, "Receive folder", "Windows writes files received from the iPhone here. The default is Downloads\\DualCopy. The folder is created automatically when the first file arrives.", folderBox);
+        page.Controls.Add(flow);
+        return page;
+    }
+
+    private TabPage BuildPerformanceTab()
+    {
+        TabPage page = NewTab("Performance");
+        page.Controls.Add(CreateSection("Responsiveness and storage", "These controls trade detection speed and retained history against battery, CPU, memory, and disk usage.", 310, out TableLayoutPanel table));
+        ConfigureNumber(intervalBox, 100, 5000, initial.PollingInterval);
+        AddSetting(table, "Polling interval", "How often the Windows app checks for a new clipboard item. 500 ms is the default balance. Lower values feel faster but use more CPU; higher values save resources but add delay.", intervalBox, "milliseconds");
+        ConfigureNumber(historyBox, 10, 1000, initial.HistoryLimit);
+        AddSetting(table, "History limit", "How many recent entries DualCopy keeps for synchronisation and the Clipboard history window. A larger value makes more past items available but uses more disk, memory, and connection time.", historyBox, "entries");
+        return page;
+    }
+
+    private TabPage BuildAppearanceTab()
+    {
+        TabPage page = NewTab("Appearance");
+        page.Controls.Add(CreateSection("Visual style", "The application uses a soft light surface by default and a deep midnight palette when dark mode is enabled. This changes the Windows interface only; it does not alter clipboard behaviour.", 250, out TableLayoutPanel table));
+        darkBox.Text = "Use midnight dark mode"; darkBox.Checked = initial.DarkMode;
+        AddSetting(table, "Theme", "Light mode uses a bright white and blue workspace. Midnight mode uses a dark navy surface with high-contrast text, which can be more comfortable in a dark room. Switch any time; it is saved with the rest of the settings.", darkBox);
+        Label note = new() { Text = "Tip: use the tray icon’s Clipboard history command to review, copy, or clear saved entries.", AutoSize = false, Dock = DockStyle.Fill, Padding = new Padding(0, 8, 0, 0) };
+        table.Controls.Add(note, 0, table.RowCount); table.SetColumnSpan(note, 2); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 42)); table.RowCount++;
+        return page;
+    }
+
+    private static TabPage NewTab(string name) => new() { Text = name, Padding = new Padding(14, 14, 14, 12), BackColor = DualCopyAppearance.LightBack };
+
+    private static FlowLayoutPanel NewFlow() => new() { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(2) };
+
+    private static GroupBox CreateSection(string title, string intro, int height, out TableLayoutPanel table)
+    {
+        GroupBox section = new() { Text = title, Height = height, Width = 736, Padding = new Padding(16, 30, 16, 12), Margin = new Padding(0, 0, 0, 14) };
+        table = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 0, Padding = new Padding(0, 2, 0, 0) };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
+        Label introLabel = new() { Text = intro, Dock = DockStyle.Top, Height = 42, AutoEllipsis = true, Padding = new Padding(0, 0, 0, 4) };
+        section.Controls.Add(table);
+        section.Controls.Add(introLabel);
+        return section;
+    }
+
+    private static void AddSetting(TableLayoutPanel table, string title, string description, Control editor, string? settingsValue = null, string? suffix = null)
+    {
+        if (settingsValue is not null && editor is TextBox textBox) textBox.Text = settingsValue;
+        int row = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
+        Panel textPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(0, 4, 12, 4) };
+        Label titleLabel = new() { Text = title, Dock = DockStyle.Top, Height = 24, Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold) };
+        Label descriptionLabel = new() { Text = description, Dock = DockStyle.Fill, AutoEllipsis = true };
+        textPanel.Controls.Add(descriptionLabel); textPanel.Controls.Add(titleLabel);
+        Panel editorPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(0, 16, 0, 0) };
+        editor.Dock = DockStyle.Top;
+        editorPanel.Controls.Add(editor);
+        if (suffix is not null)
+        {
+            Label suffixLabel = new() { Text = suffix, Dock = DockStyle.Bottom, Height = 18, TextAlign = ContentAlignment.TopLeft };
+            editorPanel.Controls.Add(suffixLabel);
+        }
+        table.Controls.Add(textPanel, 0, row); table.Controls.Add(editorPanel, 1, row);
+    }
+
+    private static void ConfigureNumber(NumericUpDown box, decimal minimum, decimal maximum, long value)
+    {
+        box.Minimum = minimum; box.Maximum = maximum; box.Value = Math.Clamp((decimal)value, minimum, maximum); box.Dock = DockStyle.Top;
     }
 }
 
@@ -505,8 +654,21 @@ internal sealed class AboutForm : Form
 {
     public AboutForm()
     {
-        Text = "About DualCopy"; StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(390, 210); Padding = new Padding(18);
-        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.0\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
-        Controls.Add(text); Button close = new() { Text = "Close", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 30 }; Controls.Add(close);
+        Text = "About DualCopy";
+        StartPosition = FormStartPosition.CenterParent;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ClientSize = new Size(500, 300);
+        Padding = new Padding(26);
+
+        Label title = new() { Text = "DualCopy", Font = new Font(SystemFonts.DefaultFont, 22, FontStyle.Bold), Dock = DockStyle.Top, Height = 42 };
+        Label subtitle = new() { Text = "Private clipboard sharing between iPhone and Windows", Dock = DockStyle.Top, Height = 34 };
+        Label details = new() { Text = "Version 0.3.0\n\nTransfers text, images, RAW camera files, and ordinary files over a trusted local TCP connection.\n\nAuthor: Ilyas Tekdin / DualCopy contributors", Dock = DockStyle.Top, Height = 112 };
+        LinkLabel repository = new() { Text = "Open the DualCopy GitHub repository", AutoSize = true, Dock = DockStyle.Top, Height = 28 };
+        repository.LinkClicked += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/EliasTekdin/DualCopy") { UseShellExecute = true });
+        Button close = new() { Text = "Close", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 34 };
+        Controls.Add(close); Controls.Add(repository); Controls.Add(details); Controls.Add(subtitle); Controls.Add(title);
+        DualCopyAppearance.Apply(this, false);
     }
 }
