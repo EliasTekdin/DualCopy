@@ -11,6 +11,11 @@ namespace DualCopy.Windows;
 
 internal sealed class PeerClient : IDisposable
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     private readonly HistoryStore history;
     private readonly SemaphoreSlim writerGate = new(1, 1);
     private readonly object writersLock = new();
@@ -165,7 +170,7 @@ internal sealed class PeerClient : IDisposable
                 string property = type == "hello" ? "history" : "entries";
                 if (root.TryGetProperty(property, out JsonElement historyElement))
                 {
-                    List<ClipboardEntry>? received = historyElement.Deserialize<List<ClipboardEntry>>();
+                    List<ClipboardEntry>? received = historyElement.Deserialize<List<ClipboardEntry>>(JsonOptions);
                     if (received is not null)
                     {
                         history.Merge(received);
@@ -182,7 +187,7 @@ internal sealed class PeerClient : IDisposable
             }
             if (type == "clipboard")
             {
-                ClipboardEntry? entry = root.Deserialize<ClipboardEntry>();
+                ClipboardEntry? entry = root.Deserialize<ClipboardEntry>(JsonOptions);
                 if (entry is not null && history.Merge(new[] { entry }))
                     RemoteClipboardReceived?.Invoke(entry);
             }

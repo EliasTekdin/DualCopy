@@ -68,6 +68,17 @@ internal sealed class MainForm : Form
         if (applyingRemote) return;
         try
         {
+            if (Clipboard.ContainsImage())
+            {
+                byte[]? data = ImageToPng(Clipboard.GetImage());
+                if (data is { Length: > 0 } && !data.AsSpan().SequenceEqual(lastImageData ?? Array.Empty<byte>()))
+                {
+                    lastImageData = data;
+                    lastClipboard = null;
+                    _ = peer.SendClipboardAsync(history.AddImage(Convert.ToBase64String(data)));
+                }
+                return;
+            }
             if (Clipboard.ContainsText())
             {
                 string text = Clipboard.GetText();
@@ -76,16 +87,6 @@ internal sealed class MainForm : Form
                     lastClipboard = text;
                     lastImageData = null;
                     _ = peer.SendClipboardAsync(history.AddText(text));
-                    return;
-                }
-            }
-            if (Clipboard.ContainsImage())
-            {
-                byte[]? data = ImageToPng(Clipboard.GetImage());
-                if (data is { Length: > 0 } && !data.AsSpan().SequenceEqual(lastImageData ?? Array.Empty<byte>()))
-                {
-                    lastImageData = data;
-                    _ = peer.SendClipboardAsync(history.AddImage(Convert.ToBase64String(data)));
                 }
             }
         }

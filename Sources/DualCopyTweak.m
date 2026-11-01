@@ -419,9 +419,20 @@ static void DualCopyRecordLocalText(NSString *text) {
     });
 }
 
+static NSData *DualCopyEncodedImage(UIImage *image) {
+    if (image == nil) return nil;
+    NSData *png = UIImagePNGRepresentation(image);
+    if (png.length > 0 && png.length <= gMaxImageBytes) return png;
+
+    NSData *jpeg = UIImageJPEGRepresentation(image, 0.82);
+    if (jpeg.length > 0 && jpeg.length <= gMaxImageBytes) return jpeg;
+    return nil;
+}
+
 static void DualCopyRecordLocalImage(NSData *imageData) {
     if (!gEnabled || !gSyncImages || imageData.length == 0 || imageData.length > gMaxImageBytes || [imageData isEqual:gLastImageData]) return;
     gLastImageData = [imageData copy];
+    gLastClipboard = nil;
     os_log(DualCopyLog(), "Detected a local image clipboard change (%lu bytes)", (unsigned long)imageData.length);
     NSString *encoded = [imageData base64EncodedStringWithOptions:0];
     dispatch_async(gNetworkQueue, ^{
@@ -453,23 +464,27 @@ static void DualCopyStartClipboardPolling(void) {
     gLastPasteboardChangeCount = pasteboard.changeCount;
     gLastClipboard = [pasteboard.string copy];
     UIImage *currentImage = gSyncImages ? pasteboard.image : nil;
-    gLastImageData = currentImage ? UIImagePNGRepresentation(currentImage) : nil;
+    gLastImageData = currentImage ? DualCopyEncodedImage(currentImage) : nil;
     gClipboardTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(gClipboardTimer, ^{
         if (!gEnabled) return;
         UIPasteboard *current = UIPasteboard.generalPasteboard;
         NSInteger changeCount = current.changeCount;
-        if (changeCount == gLastPasteboardChangeCount) return;
         gLastPasteboardChangeCount = changeCount;
+
+        if (gSyncImages && current.image != nil) {
+            NSData *data = DualCopyEncodedImage(current.image);
+            if (data.length > 0 && ![data isEqual:gLastImageData]) {
+                DualCopyRecordLocalImage(data);
+            } else if (data.length == 0 && ![data isEqual:gLastImageData]) {
+                os_log(DualCopyLog(), "Skipped an image clipboard change because it exceeds the configured image limit");
+            }
+            return;
+        }
 
         NSString *text = current.string;
         if (text.length > 0 && ![text isEqualToString:gLastClipboard]) {
             DualCopyRecordLocalText(text);
-            return;
-        }
-        if (gSyncImages && current.image != nil) {
-            NSData *data = UIImagePNGRepresentation(current.image);
-            if (data.length > 0 && ![data isEqual:gLastImageData]) DualCopyRecordLocalImage(data);
         }
     });
     dispatch_resume(gClipboardTimer);

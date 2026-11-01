@@ -10,6 +10,11 @@ internal sealed record ClipboardEntry(string Id, string Kind, string? Text, stri
 
 internal sealed class HistoryStore
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     private const int Limit = 50;
     private readonly object gate = new();
     private readonly string path;
@@ -75,7 +80,7 @@ internal sealed class HistoryStore
         try
         {
             if (!File.Exists(path)) return;
-            List<ClipboardEntry>? loaded = JsonSerializer.Deserialize<List<ClipboardEntry>>(File.ReadAllText(path));
+            List<ClipboardEntry>? loaded = JsonSerializer.Deserialize<List<ClipboardEntry>>(File.ReadAllText(path), JsonOptions);
             if (loaded is null) return;
             entries = loaded.Where(item => item.Kind == "image" ? !string.IsNullOrEmpty(item.Data) : !string.IsNullOrEmpty(item.Text))
                 .OrderByDescending(item => item.Timestamp).Take(Limit).ToList();
