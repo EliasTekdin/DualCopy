@@ -66,15 +66,15 @@ static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcop
         os_log(log, "DualCopy preference controller building specifiers");
 
         NSMutableArray *specifiers = [NSMutableArray array];
-        PSSpecifier *group = [PSSpecifier groupSpecifierWithName:@"DualCopy"];
-        [group setProperty:@"Connect the iPhone and Windows computer over a trusted local network."
+        PSSpecifier *group = [PSSpecifier groupSpecifierWithName:@"Connection"];
+        [group setProperty:@"This iPhone listens on the local port below and connects to Windows using the Windows address and port. The same port, 49732, may be used on both devices."
                     forKey:@"footerText"];
         [specifiers addObject:group];
         [specifiers addObject:[self dualCopyValueSpecifier:@"Enabled"
                                                        key:@"enabled"
                                                   default:@YES
                                                      cell:PSSwitchCell]];
-        [specifiers addObject:[self dualCopyValueSpecifier:@"Listen port"
+        [specifiers addObject:[self dualCopyValueSpecifier:@"Listen port (on this iPhone)"
                                                        key:@"listenPort"
                                                   default:@"49732"
                                                      cell:PSEditTextCell]];
@@ -82,9 +82,9 @@ static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcop
                                                          key:@"computerAddress"
                                                     default:@""
                                                        cell:PSEditTextCell];
-        [address setProperty:@"Optional, for automatic outbound connection" forKey:@"placeholder"];
+        [address setProperty:@"Required: the Windows computer address for automatic connection" forKey:@"placeholder"];
         [specifiers addObject:address];
-        [specifiers addObject:[self dualCopyValueSpecifier:@"Windows computer port"
+        [specifiers addObject:[self dualCopyValueSpecifier:@"Windows listening port"
                                                        key:@"computerPort"
                                                   default:@"49732"
                                                      cell:PSEditTextCell]];

@@ -8,9 +8,9 @@
   <array>
     <dict>
       <key>cell</key><string>PSGroupCell</string>
-      <key>label</key><string>DualCopy</string>
+      <key>label</key><string>Connection</string>
       <key>footerText</key>
-      <string>DualCopy can accept a connection from Windows or initiate one when the Windows address is set. Use the same TCP port on both devices and keep it restricted to a trusted network.</string>
+      <string>This iPhone listens on the local port below and connects to Windows using the Windows address and port. The same port, 49732, may be used on both devices.</string>
     </dict>
     <dict>
       <key>cell</key><string>PSSwitchCell</string>
@@ -22,7 +22,7 @@
     </dict>
     <dict>
       <key>cell</key><string>PSEditTextCell</string>
-      <key>label</key><string>Listen port</string>
+      <key>label</key><string>Listen port (on this iPhone)</string>
       <key>key</key><string>listenPort</string>
       <key>default</key><string>49732</string>
       <key>defaults</key><string>com.eliastekdin.dualcopy</string>
@@ -36,12 +36,12 @@
       <key>default</key><string></string>
       <key>defaults</key><string>com.eliastekdin.dualcopy</string>
       <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-      <key>placeholder</key><string>Optional, e.g. 192.168.1.20</string>
+      <key>placeholder</key><string>Required, e.g. 192.168.1.20</string>
     </dict>
     <dict>
       <key>cell</key><string>PSEditTextCell</string>
-      <key>label</key><string>Windows computer port</string>
-      <key>key</key><string>computerPort</key>
+      <key>label</key><string>Windows listening port</string>
+      <key>key</key><string>computerPort</string>
       <key>default</key><string>49732</string>
       <key>defaults</key><string>com.eliastekdin.dualcopy</string>
       <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>

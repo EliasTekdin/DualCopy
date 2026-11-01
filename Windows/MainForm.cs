@@ -209,7 +209,7 @@ internal sealed class ConfigureForm : Form
         addressBox.Text = address;
         Controls.Add(addressBox);
 
-        Controls.Add(new Label { Text = "TCP port", Left = 16, Top = 54, AutoSize = true });
+        Controls.Add(new Label { Text = "iPhone listening port", Left = 16, Top = 54, AutoSize = true });
         portBox.SetBounds(165, 50, 100, 24);
         portBox.Minimum = 1;
         portBox.Maximum = 65535;
