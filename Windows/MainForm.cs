@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using System.Windows.Forms;
@@ -26,8 +27,6 @@ internal sealed class MainForm : Form
         (phoneAddress, phonePort) = LoadSettings();
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         peer = new PeerClient(history, phoneAddress, phonePort);
-        peer.StatusChanged += status => uiContext.Post(_ => trayIcon.Text = "DualCopy: " + TrimStatus(status), null);
-        peer.RemoteClipboardReceived += entry => uiContext.Post(_ => ApplyRemoteClipboard(entry), null);
 
         trayIcon = new NotifyIcon
         {
@@ -35,6 +34,9 @@ internal sealed class MainForm : Form
             Visible = true,
             Text = "DualCopy: connecting"
         };
+        peer.StatusChanged += status => uiContext.Post(_ => trayIcon.Text = "DualCopy: " + TrimStatus(status), null);
+        peer.RemoteClipboardReceived += entry => uiContext.Post(_ => ApplyRemoteClipboard(entry), null);
+
         ContextMenuStrip menu = new();
         menu.Items.Add("Configure", null, (_, _) => ShowConfigure());
         menu.Items.Add("Exit", null, (_, _) => Close());
