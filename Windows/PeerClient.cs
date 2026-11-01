@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading;
@@ -12,10 +13,12 @@ internal sealed class PeerClient : IDisposable
 {
     private readonly HistoryStore history;
     private readonly SemaphoreSlim writerGate = new(1, 1);
+    private readonly object writersLock = new();
+    private readonly List<StreamWriter> writers = new();
     private CancellationTokenSource? connectionCancellation;
+    private TcpListener? listener;
     private string address;
     private int port;
-    private StreamWriter? activeWriter;
 
     public event Action<ClipboardEntry>? RemoteClipboardReceived;
     public event Action<string>? StatusChanged;
@@ -36,8 +39,10 @@ internal sealed class PeerClient : IDisposable
     public void Start()
     {
         connectionCancellation?.Cancel();
+        try { listener?.Stop(); } catch { }
         connectionCancellation = new CancellationTokenSource();
-        _ = RunAsync(connectionCancellation.Token);
+        _ = ListenAsync(connectionCancellation.Token);
+        _ = ConnectAsync(connectionCancellation.Token);
     }
 
     public async Task SendClipboardAsync(ClipboardEntry entry)
@@ -45,7 +50,35 @@ internal sealed class PeerClient : IDisposable
         await SendAsync(new { type = "clipboard", id = entry.Id, kind = entry.Kind, text = entry.Text, data = entry.Data, timestamp = entry.Timestamp }).ConfigureAwait(false);
     }
 
-    private async Task RunAsync(CancellationToken cancellationToken)
+    private async Task ListenAsync(CancellationToken cancellationToken)
+    {
+        TcpListener server = new(IPAddress.Any, port);
+        listener = server;
+        try
+        {
+            server.Start();
+            StatusChanged?.Invoke($"Listening on port {port}");
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                TcpClient client = await server.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                _ = HandleConnectionAsync(client, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (SocketException error)
+        {
+            StatusChanged?.Invoke($"Listen failed: {error.Message}");
+        }
+        finally
+        {
+            try { server.Stop(); } catch { }
+            if (ReferenceEquals(listener, server)) listener = null;
+        }
+    }
+
+    private async Task ConnectAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -53,11 +86,33 @@ internal sealed class PeerClient : IDisposable
             {
                 using TcpClient client = new();
                 await client.ConnectAsync(address, port, cancellationToken).ConfigureAwait(false);
-                using NetworkStream stream = client.GetStream();
-                using StreamReader reader = new(stream);
-                using StreamWriter writer = new(stream) { AutoFlush = true };
-                activeWriter = writer;
-                StatusChanged?.Invoke($"Connected to {address}:{port}");
+                await HandleConnectionAsync(client, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception error)
+            {
+                StatusChanged?.Invoke($"Outgoing connection: {error.Message}");
+            }
+
+            try { await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    private async Task HandleConnectionAsync(TcpClient client, CancellationToken cancellationToken)
+    {
+        using (client)
+        using (NetworkStream stream = client.GetStream())
+        using (StreamReader reader = new(stream))
+        using (StreamWriter writer = new(stream) { AutoFlush = true })
+        {
+            AddWriter(writer);
+            try
+            {
+                StatusChanged?.Invoke("Connected to DualCopy peer");
                 ClipboardEntry? before = history.Newest;
                 await SendToWriterAsync(writer, new { type = "hello", device = "windows", history = history.Snapshot() }, cancellationToken).ConfigureAwait(false);
 
@@ -70,19 +125,15 @@ internal sealed class PeerClient : IDisposable
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                break;
             }
             catch (Exception error)
             {
-                StatusChanged?.Invoke($"Disconnected: {error.Message}");
+                StatusChanged?.Invoke($"Peer disconnected: {error.Message}");
             }
             finally
             {
-                activeWriter = null;
+                RemoveWriter(writer);
             }
-
-            try { await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
         }
     }
 
@@ -128,18 +179,26 @@ internal sealed class PeerClient : IDisposable
 
     private async Task SendAsync(object message)
     {
-        StreamWriter? writer = activeWriter;
-        if (writer is null) return;
-        await SendToWriterAsync(writer, message, CancellationToken.None).ConfigureAwait(false);
+        StreamWriter[] active;
+        lock (writersLock) active = writers.ToArray();
+        foreach (StreamWriter writer in active)
+            await SendToWriterAsync(writer, message, CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task SendToWriterAsync(StreamWriter writer, object message, CancellationToken cancellationToken)
     {
+        lock (writersLock)
+        {
+            if (!writers.Contains(writer)) return;
+        }
         await writerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (activeWriter == writer || activeWriter is null)
-                await writer.WriteLineAsync(JsonSerializer.Serialize(message).AsMemory(), cancellationToken).ConfigureAwait(false);
+            lock (writersLock)
+            {
+                if (!writers.Contains(writer)) return;
+            }
+            await writer.WriteLineAsync(JsonSerializer.Serialize(message).AsMemory(), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -147,9 +206,28 @@ internal sealed class PeerClient : IDisposable
         }
     }
 
+    private void AddWriter(StreamWriter writer)
+    {
+        lock (writersLock) writers.Add(writer);
+    }
+
+    private void RemoveWriter(StreamWriter writer)
+    {
+        lock (writersLock) writers.Remove(writer);
+    }
+
     public void Dispose()
     {
         connectionCancellation?.Cancel();
+        try { listener?.Stop(); } catch { }
+        lock (writersLock)
+        {
+            foreach (StreamWriter writer in writers.ToArray())
+            {
+                try { writer.Dispose(); } catch { }
+            }
+            writers.Clear();
+        }
         writerGate.Dispose();
     }
 }

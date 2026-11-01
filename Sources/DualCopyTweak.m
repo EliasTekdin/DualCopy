@@ -29,6 +29,7 @@ static dispatch_queue_t gNetworkQueue;
 static NSMutableArray<NSDictionary *> *gHistory;
 static int gListenFD = -1;
 static int gClientFD = -1;
+static NSLock *gSocketLock;
 static NSString *gLastClipboard;
 static NSData *gLastImageData;
 static dispatch_source_t gClipboardTimer;
@@ -38,6 +39,8 @@ static int gSettingsNotificationToken;
 static BOOL gEnabled = YES;
 static BOOL gSyncImages = YES;
 static uint16_t gListenPort = kDualCopyDefaultPort;
+static NSString *gComputerAddress;
+static uint16_t gComputerPort = kDualCopyDefaultPort;
 static NSUInteger gPollIntervalMilliseconds = 500;
 static NSUInteger gHistoryLimit = kDualCopyDefaultHistoryLimit;
 static NSUInteger gMaxImageBytes = kDualCopyDefaultMaxImageBytes;
@@ -67,18 +70,24 @@ static void DualCopyReadSettings(void) {
     id enabled = DualCopyPreference(@"enabled");
     id images = DualCopyPreference(@"syncImages");
     id port = DualCopyPreference(@"listenPort");
+    id computerAddress = DualCopyPreference(@"computerAddress");
+    id computerPort = DualCopyPreference(@"computerPort");
     id interval = DualCopyPreference(@"pollInterval");
     id historyLimit = DualCopyPreference(@"historyLimit");
     id maxImageBytes = DualCopyPreference(@"maxImageBytes");
     if ([enabled isKindOfClass:[NSNumber class]]) gEnabled = [enabled boolValue];
     if ([images isKindOfClass:[NSNumber class]]) gSyncImages = [images boolValue];
+    if ([computerAddress isKindOfClass:[NSString class]]) gComputerAddress = [computerAddress stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    else gComputerAddress = @"";
     gListenPort = (uint16_t)DualCopyPositiveInteger(port, kDualCopyDefaultPort, 1024, 65535);
+    gComputerPort = (uint16_t)DualCopyPositiveInteger(computerPort, kDualCopyDefaultPort, 1024, 65535);
     gPollIntervalMilliseconds = DualCopyPositiveInteger(interval, 500, 100, 5000);
     gHistoryLimit = DualCopyPositiveInteger(historyLimit, kDualCopyDefaultHistoryLimit, 10, 100);
     gMaxImageBytes = DualCopyPositiveInteger(maxImageBytes, kDualCopyDefaultMaxImageBytes, 256 * 1024, 16 * 1024 * 1024);
     if (gHistory != nil) DualCopyTrimAndSort();
-    os_log(DualCopyLog(), "Settings loaded: enabled=%{public}s images=%{public}s port=%u interval=%lu history=%lu maxImageBytes=%lu",
+    os_log(DualCopyLog(), "Settings loaded: enabled=%{public}s images=%{public}s port=%u computer=%{public}s computerPort=%u interval=%lu history=%lu maxImageBytes=%lu",
            gEnabled ? "yes" : "no", gSyncImages ? "yes" : "no", gListenPort,
+           gComputerAddress.UTF8String ?: "", gComputerPort,
            (unsigned long)gPollIntervalMilliseconds, (unsigned long)gHistoryLimit, (unsigned long)gMaxImageBytes);
 }
 
@@ -184,25 +193,34 @@ static BOOL DualCopyMergeEntries(NSArray *entries) {
 }
 
 static void DualCopySendObject(NSDictionary *object) {
-    if (!gEnabled || gClientFD < 0) return;
+    if (!gEnabled) return;
     NSError *error = nil;
     NSData *json = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
     if (json == nil || error != nil) return;
     NSMutableData *line = [json mutableCopy];
     [line appendBytes:"\n" length:1];
+
+    [gSocketLock lock];
+    int clientFD = gClientFD;
+    if (clientFD < 0) {
+        [gSocketLock unlock];
+        return;
+    }
     const uint8_t *bytes = line.bytes;
     size_t remaining = line.length;
     while (remaining > 0) {
-        ssize_t sent = send(gClientFD, bytes, remaining, 0);
+        ssize_t sent = send(clientFD, bytes, remaining, 0);
         if (sent <= 0) {
             if (errno == EINTR) continue;
-            close(gClientFD);
-            gClientFD = -1;
+            close(clientFD);
+            if (gClientFD == clientFD) gClientFD = -1;
+            [gSocketLock unlock];
             return;
         }
         bytes += sent;
         remaining -= (size_t)sent;
     }
+    [gSocketLock unlock];
 }
 
 static void DualCopySendHistory(void) {
@@ -268,12 +286,34 @@ static void DualCopyHandleObject(NSDictionary *object) {
     }
 }
 
+static BOOL DualCopyClaimClient(int clientFD) {
+    [gSocketLock lock];
+    BOOL claimed = gClientFD < 0;
+    if (claimed) gClientFD = clientFD;
+    [gSocketLock unlock];
+    return claimed;
+}
+
+static void DualCopyReleaseClient(int clientFD) {
+    [gSocketLock lock];
+    if (gClientFD == clientFD) gClientFD = -1;
+    close(clientFD);
+    [gSocketLock unlock];
+}
+
 static void DualCopyReadClient(int clientFD) {
-    gClientFD = clientFD;
+    if (!DualCopyClaimClient(clientFD)) {
+        close(clientFD);
+        return;
+    }
     DualCopySendObject(@{ @"type": @"hello", @"device": @"ios", @"history": [gHistory copy] });
     NSMutableData *pending = [NSMutableData data];
     uint8_t buffer[8192];
-    while (gClientFD == clientFD) {
+    while (true) {
+        [gSocketLock lock];
+        BOOL active = gClientFD == clientFD;
+        [gSocketLock unlock];
+        if (!active) break;
         ssize_t count = recv(clientFD, buffer, sizeof(buffer), 0);
         if (count <= 0) break;
         [pending appendBytes:buffer length:(NSUInteger)count];
@@ -288,11 +328,8 @@ static void DualCopyReadClient(int clientFD) {
             if ([object isKindOfClass:[NSDictionary class]]) DualCopyHandleObject(object);
         }
     }
-    if (gClientFD == clientFD) {
-        close(clientFD);
-        gClientFD = -1;
-    }
-    os_log(DualCopyLog(), "Windows clipboard peer disconnected");
+    DualCopyReleaseClient(clientFD);
+    os_log(DualCopyLog(), "Clipboard peer disconnected");
 }
 
 static void DualCopyAcceptLoop(void) {
@@ -325,7 +362,43 @@ static void DualCopyAcceptLoop(void) {
             close(client);
             continue;
         }
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ DualCopyReadClient(client); });
+    }
+}
+
+static void DualCopyConnectLoop(void) {
+    while (true) {
+        if (!gEnabled || gComputerAddress.length == 0) {
+            sleep(2);
+            continue;
+        }
+        [gSocketLock lock];
+        BOOL connected = gClientFD >= 0;
+        [gSocketLock unlock];
+        if (connected) {
+            sleep(2);
+            continue;
+        }
+
+        int client = socket(AF_INET, SOCK_STREAM, 0);
+        if (client < 0) {
+            sleep(2);
+            continue;
+        }
+        struct sockaddr_in address = {0};
+        address.sin_len = sizeof(address);
+        address.sin_family = AF_INET;
+        address.sin_port = htons(gComputerPort);
+        const char *host = gComputerAddress.UTF8String;
+        if (host == NULL || inet_pton(AF_INET, host, &address.sin_addr) != 1 ||
+            connect(client, (struct sockaddr *)&address, sizeof(address)) != 0) {
+            close(client);
+            sleep(2);
+            continue;
+        }
+        os_log(DualCopyLog(), "Connected to Windows at %{public}s:%u", host, gComputerPort);
         DualCopyReadClient(client);
+        sleep(2);
     }
 }
 
@@ -405,6 +478,7 @@ static void DualCopySettingsChanged(int token) {
 static void DualCopyStart(void) {
     dispatch_once(&gStartOnce, ^{
         gNetworkQueue = dispatch_queue_create("com.eliastekdin.dualcopy.network", DISPATCH_QUEUE_SERIAL);
+        gSocketLock = [NSLock new];
         dispatch_async(gNetworkQueue, ^{
             DualCopyReadSettings();
             notify_register_dispatch("com.eliastekdin.dualcopy/changed", &gSettingsNotificationToken, gNetworkQueue, ^(int token) {
@@ -412,7 +486,8 @@ static void DualCopyStart(void) {
             });
             DualCopyLoadHistory();
             dispatch_async(dispatch_get_main_queue(), ^{ DualCopyStartClipboardPolling(); });
-            if (gEnabled) DualCopyAcceptLoop();
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ DualCopyAcceptLoop(); });
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ DualCopyConnectLoop(); });
         });
     });
 }

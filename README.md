@@ -2,9 +2,9 @@
 
 DualCopy shares text and image clipboard history between a jailbroken iPhone and a Windows 11 PC over a local TCP connection.
 
-- **iPhone:** a SpringBoard tweak listens on TCP port `49732` by default, records a configurable number of entries, and applies text or PNG images received from Windows to the general pasteboard.
-- **Windows:** a .NET 8 WinForms tray application connects to the phone by IP address, records text and PNG image entries, and updates the Windows clipboard when the phone sends a new entry.
-- **Settings:** the iPhone adds a `DualCopy` pane under Settings → Tweaks with enable/disable, port, polling interval, history limit, image sync, and image-size controls.
+- **iPhone:** a SpringBoard tweak listens on TCP port `49732` by default, can initiate a connection to the configured Windows endpoint, records a configurable number of text and image entries, and applies text or PNG images received from Windows to the general pasteboard.
+- **Windows:** a .NET 8 WinForms tray application listens for the iPhone and also maintains an outgoing connection to the configured iPhone address, records text and PNG image entries, and updates the Windows clipboard when the iPhone sends a new entry.
+- **Settings:** the iPhone adds a `DualCopy` pane under Settings → Tweaks with enable/disable, iPhone listen port, Windows computer IP/port, polling interval, history limit, image sync, and image-size controls.
 - **Protocol:** UTF-8 JSON Lines. The first message is `hello` with a history array; subsequent messages are `clipboard` entries. Images are PNG bytes encoded as base64. The full history is exchanged once per connection.
 
 ## Security
@@ -34,7 +34,7 @@ powershell -ExecutionPolicy Bypass -File Windows\Publish.ps1
 
 The public repository also contains a GitHub Actions workflow that publishes `DualCopy.exe` artifacts for `win-x64` and `win-arm64` whenever the Windows sources change. Those artifacts include the .NET runtime and do not require .NET to be installed on the target PC.
 
-The tray menu's **Configure** dialog accepts the iPhone IP address and port. The default port is `49732`. After saving, the client reconnects automatically. A connection status is shown in the tray tooltip.
+The tray menu's **Configure** dialog accepts the iPhone IP address and port. The application listens on that same port for an iPhone-initiated connection and also retries its outgoing connection automatically. The default port is `49732`. On the iPhone, set **Windows computer IP address** and **Windows computer port** in Settings → Tweaks → DualCopy when you want the phone to initiate the connection. The same clipboard protocol works in either direction, and duplicate connections are safe because entries use unique IDs. A connection status is shown in the tray tooltip.
 
 ## iPhone build and install
 
