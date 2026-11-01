@@ -324,7 +324,7 @@ internal sealed class MainForm : Form
         Panel content = new() { Dock = DockStyle.Fill, Padding = new Padding(42, 36, 42, 24) };
         Label title = new() { Text = "About DualCopy", Font = new Font(SystemFonts.DefaultFont.FontFamily, 24, FontStyle.Bold), Dock = DockStyle.Top, Height = 48 };
         Label subtitle = new() { Text = "Private clipboard sharing between iPhone and Windows", Dock = DockStyle.Top, Height = 34 };
-        Label details = new() { Text = "Version 0.3.1\n\nTransfers text, images, RAW camera files, and ordinary files over a trusted local TCP connection.\n\nAuthor: Ilyas Tekdin / DualCopy contributors", AutoSize = false, Dock = DockStyle.Top, Height = 150, Padding = new Padding(0, 18, 0, 0) };
+        Label details = new() { Text = "Version 0.3.2\n\nTransfers text, images, RAW camera files, and ordinary files over a trusted local TCP connection.\n\nAuthor: Ilyas Tekdin / DualCopy contributors", AutoSize = false, Dock = DockStyle.Top, Height = 150, Padding = new Padding(0, 18, 0, 0) };
         LinkLabel repository = new() { Text = "Open the DualCopy GitHub repository", AutoSize = true, Dock = DockStyle.Top, Height = 30 };
         repository.LinkClicked += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/EliasTekdin/DualCopy") { UseShellExecute = true });
         Label support = new() { Text = "The Windows companion runs in the notification area when its window is hidden. Double-click the tray icon to return here.", AutoSize = false, Dock = DockStyle.Top, Height = 60, Padding = new Padding(0, 18, 0, 0) };

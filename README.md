@@ -52,7 +52,7 @@ After installation, open Settings → Tweaks → DualCopy, set the Windows compu
 
 ## Repository status
 
-The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.1` adds background RAW conversion on iPhone, encoded-image pasteboard handling that avoids misclassifying normal images as files, a redesigned Windows settings interface with detailed explanations, and polished light/midnight themes.
+The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.2` adds the redesigned resizable Windows workspace with Configure, Clipboard History, and About tabs, neutral light/dark themes, and the option to open the interface immediately at startup. It retains the RAW conversion, image handling, file transfer, and detailed settings introduced previously.
 
 ## License
 
