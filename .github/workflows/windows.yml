@@ -1,0 +1,40 @@
+name: Build Windows companion
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Windows/**'
+      - '.github/workflows/windows.yml'
+
+jobs:
+  publish:
+    strategy:
+      matrix:
+        runtime: [win-x64, win-arm64]
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish self-contained executable
+        run: >-
+          dotnet publish Windows/DualCopy.Windows.csproj
+          --configuration Release
+          --runtime ${{ matrix.runtime }}
+          --self-contained true
+          --output Windows/dist/${{ matrix.runtime }}
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=None
+          -p:DebugSymbols=false
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: DualCopy-${{ matrix.runtime }}
+          path: Windows/dist/${{ matrix.runtime }}/DualCopy.exe
+          if-no-files-found: error

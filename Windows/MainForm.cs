@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -15,6 +16,7 @@ internal sealed class MainForm : Form
     private readonly SynchronizationContext uiContext;
     private PeerClient peer;
     private string? lastClipboard;
+    private byte[]? lastImageData;
     private bool applyingRemote;
     private string phoneAddress;
     private int phonePort;
@@ -25,7 +27,7 @@ internal sealed class MainForm : Form
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         peer = new PeerClient(history, phoneAddress, phonePort);
         peer.StatusChanged += status => uiContext.Post(_ => trayIcon.Text = "DualCopy: " + TrimStatus(status), null);
-        peer.RemoteClipboardReceived += text => uiContext.Post(_ => ApplyRemoteClipboard(text), null);
+        peer.RemoteClipboardReceived += entry => uiContext.Post(_ => ApplyRemoteClipboard(entry), null);
 
         trayIcon = new NotifyIcon
         {
@@ -56,14 +58,29 @@ internal sealed class MainForm : Form
 
     private void PollClipboard()
     {
-        if (applyingRemote || !Clipboard.ContainsText()) return;
+        if (applyingRemote) return;
         try
         {
-            string text = Clipboard.GetText();
-            if (string.IsNullOrEmpty(text) || text == lastClipboard) return;
-            lastClipboard = text;
-            ClipboardEntry entry = history.AddLocal(text);
-            _ = peer.SendClipboardAsync(entry);
+            if (Clipboard.ContainsText())
+            {
+                string text = Clipboard.GetText();
+                if (!string.IsNullOrEmpty(text) && text != lastClipboard)
+                {
+                    lastClipboard = text;
+                    lastImageData = null;
+                    _ = peer.SendClipboardAsync(history.AddText(text));
+                    return;
+                }
+            }
+            if (Clipboard.ContainsImage())
+            {
+                byte[]? data = ImageToPng(Clipboard.GetImage());
+                if (data is { Length: > 0 } && !data.AsSpan().SequenceEqual(lastImageData ?? Array.Empty<byte>()))
+                {
+                    lastImageData = data;
+                    _ = peer.SendClipboardAsync(history.AddImage(Convert.ToBase64String(data)));
+                }
+            }
         }
         catch (ExternalException)
         {
@@ -71,22 +88,50 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void ApplyRemoteClipboard(string text)
+    private void ApplyRemoteClipboard(ClipboardEntry entry)
     {
-        if (string.IsNullOrEmpty(text)) return;
         try
         {
             applyingRemote = true;
-            Clipboard.SetText(text);
-            lastClipboard = text;
+            if (entry.Kind == "image" && !string.IsNullOrEmpty(entry.Data))
+            {
+                byte[] data = Convert.FromBase64String(entry.Data);
+                using MemoryStream stream = new(data);
+                using Image source = Image.FromStream(stream);
+                using Bitmap bitmap = new(source);
+                Clipboard.SetImage(bitmap);
+                lastImageData = data;
+                lastClipboard = null;
+            }
+            else if (entry.Kind == "text" && !string.IsNullOrEmpty(entry.Text))
+            {
+                Clipboard.SetText(entry.Text);
+                lastClipboard = entry.Text;
+                lastImageData = null;
+            }
         }
         catch (ExternalException)
         {
             trayIcon.Text = "DualCopy: could not write clipboard";
         }
+        catch (FormatException)
+        {
+            trayIcon.Text = "DualCopy: invalid image received";
+        }
         finally
         {
             applyingRemote = false;
+        }
+    }
+
+    private static byte[]? ImageToPng(Image? image)
+    {
+        if (image is null) return null;
+        using (image)
+        using (MemoryStream stream = new())
+        {
+            image.Save(stream, ImageFormat.Png);
+            return stream.ToArray();
         }
     }
 

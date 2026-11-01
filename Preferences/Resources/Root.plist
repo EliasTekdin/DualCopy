@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>title</key>
+  <string>DualCopy</string>
+  <key>items</key>
+  <array>
+    <dict>
+      <key>cell</key><string>PSGroupCell</string>
+      <key>label</key><string>DualCopy</string>
+      <key>footerText</key>
+      <string>Clipboard sync runs locally over TCP. Port changes require a respring. Keep the port restricted to a trusted network.</string>
+    </dict>
+    <dict>
+      <key>cell</key><string>PSSwitchCell</string>
+      <key>label</key><string>Enabled</string>
+      <key>key</key><string>enabled</string>
+      <key>default</key><true/>
+      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
+      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
+    </dict>
+    <dict>
+      <key>cell</key><string>PSEditTextCell</string>
+      <key>label</key><string>Listen port</string>
+      <key>key</key><string>listenPort</string>
+      <key>default</key><string>49732</string>
+      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
+      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
+      <key>keyboard</key><string>NumbersAndPunctuation</string>
+    </dict>
+    <dict>
+      <key>cell</key><string>PSGroupCell</string>
+      <key>label</key><string>Performance</string>
+      <key>footerText</key><string>Shorter polling detects changes faster but uses more battery. Longer intervals are more efficient.</string>
+    </dict>
+    <dict>
+      <key>cell</key><string>PSEditTextCell</string>
+      <key>label</key><string>Polling interval (ms)</string>
+      <key>key</key><string>pollInterval</string>
+      <key>default</key><string>500</string>
+      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
+      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
+      <key>keyboard</key><string>NumbersAndPunctuation</string>
+    </dict>
+    <dict>
+      <key>cell</key><string>PSEditTextCell</string>
+      <key>label</key><string>History limit</string>
+      <key>key</key><string>historyLimit</string>
+      <key>default</key><string>50</string>
+      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
+      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
+      <key>keyboard</key><string>NumbersAndPunctuation</string>
+    </dict>
+    <dict>
+      <key>cell</key><string>PSGroupCell</string>
+      <key>label</key><string>Images</string>
+      <key>footerText</key><string>Images are encoded as PNG and sent over the same local TCP connection. The size limit prevents large transfers from affecting responsiveness.</string>
+    </dict>
+    <dict>
+      <key>cell</key><string>PSSwitchCell</string>
+      <key>label</key><string>Sync images</string>
+      <key>key</key><string>syncImages</string>
+      <key>default</key><true/>
+      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
+      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
+    </dict>
+    <dict>
+      <key>cell</key><string>PSEditTextCell</string>
+      <key>label</key><string>Maximum image size (bytes)</string>
+      <key>key</key><string>maxImageBytes</string>
+      <key>default</key><string>4194304</string>
+      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
+      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
+      <key>keyboard</key><string>NumbersAndPunctuation</string>
+    </dict>
+  </array>
+</dict>
+</plist>

@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace DualCopy.Windows;
 
-internal sealed record ClipboardEntry(string Id, string Text, long Timestamp);
+internal sealed record ClipboardEntry(string Id, string Kind, string? Text, string? Data, long Timestamp);
 
 internal sealed class HistoryStore
 {
@@ -33,9 +33,16 @@ internal sealed class HistoryStore
         lock (gate) return entries.ToArray();
     }
 
-    public ClipboardEntry AddLocal(string text)
+    public ClipboardEntry AddText(string text)
     {
-        ClipboardEntry entry = new(Guid.NewGuid().ToString(), text, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        ClipboardEntry entry = new(Guid.NewGuid().ToString(), "text", text, null, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        Merge(new[] { entry });
+        return entry;
+    }
+
+    public ClipboardEntry AddImage(string data)
+    {
+        ClipboardEntry entry = new(Guid.NewGuid().ToString(), "image", null, data, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         Merge(new[] { entry });
         return entry;
     }
@@ -48,7 +55,8 @@ internal sealed class HistoryStore
             HashSet<string> known = entries.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
             foreach (ClipboardEntry item in incoming)
             {
-                if (string.IsNullOrWhiteSpace(item.Text) || known.Contains(item.Id)) continue;
+                bool valid = item.Kind == "image" ? !string.IsNullOrEmpty(item.Data) : item.Kind == "text" && !string.IsNullOrEmpty(item.Text);
+                if (!valid || known.Contains(item.Id)) continue;
                 entries.Add(item);
                 known.Add(item.Id);
                 changed = true;
@@ -69,7 +77,7 @@ internal sealed class HistoryStore
             if (!File.Exists(path)) return;
             List<ClipboardEntry>? loaded = JsonSerializer.Deserialize<List<ClipboardEntry>>(File.ReadAllText(path));
             if (loaded is null) return;
-            entries = loaded.Where(item => !string.IsNullOrWhiteSpace(item.Text))
+            entries = loaded.Where(item => item.Kind == "image" ? !string.IsNullOrEmpty(item.Data) : !string.IsNullOrEmpty(item.Text))
                 .OrderByDescending(item => item.Timestamp).Take(Limit).ToList();
         }
         catch

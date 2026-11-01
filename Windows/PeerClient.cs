@@ -15,8 +15,9 @@ internal sealed class PeerClient : IDisposable
     private CancellationTokenSource? connectionCancellation;
     private string address;
     private int port;
+    private StreamWriter? activeWriter;
 
-    public event Action<string>? RemoteClipboardReceived;
+    public event Action<ClipboardEntry>? RemoteClipboardReceived;
     public event Action<string>? StatusChanged;
 
     public PeerClient(HistoryStore history, string address, int port)
@@ -41,7 +42,7 @@ internal sealed class PeerClient : IDisposable
 
     public async Task SendClipboardAsync(ClipboardEntry entry)
     {
-        await SendAsync(new { type = "clipboard", id = entry.Id, text = entry.Text, timestamp = entry.Timestamp }).ConfigureAwait(false);
+        await SendAsync(new { type = "clipboard", id = entry.Id, kind = entry.Kind, text = entry.Text, data = entry.Data, timestamp = entry.Timestamp }).ConfigureAwait(false);
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -58,12 +59,12 @@ internal sealed class PeerClient : IDisposable
                 activeWriter = writer;
                 StatusChanged?.Invoke($"Connected to {address}:{port}");
                 ClipboardEntry? before = history.Newest;
-                await WriteAsync(writer, new { type = "hello", device = "windows", history = history.Snapshot() }, cancellationToken).ConfigureAwait(false);
+                await SendToWriterAsync(writer, new { type = "hello", device = "windows", history = history.Snapshot() }, cancellationToken).ConfigureAwait(false);
 
                 string? line;
                 while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
                 {
-                    HandleMessage(line, writer, before, cancellationToken);
+                    await HandleMessageAsync(line, writer, before, cancellationToken).ConfigureAwait(false);
                     before = history.Newest;
                 }
             }
@@ -85,9 +86,7 @@ internal sealed class PeerClient : IDisposable
         }
     }
 
-    private StreamWriter? activeWriter;
-
-    private void HandleMessage(string line, StreamWriter writer, ClipboardEntry? before, CancellationToken cancellationToken)
+    private async Task HandleMessageAsync(string line, StreamWriter writer, ClipboardEntry? before, CancellationToken cancellationToken)
     {
         try
         {
@@ -96,7 +95,8 @@ internal sealed class PeerClient : IDisposable
             string? type = root.TryGetProperty("type", out JsonElement typeElement) ? typeElement.GetString() : null;
             if (type is "hello" or "history")
             {
-                if (root.TryGetProperty(type == "hello" ? "history" : "entries", out JsonElement historyElement))
+                string property = type == "hello" ? "history" : "entries";
+                if (root.TryGetProperty(property, out JsonElement historyElement))
                 {
                     List<ClipboardEntry>? received = historyElement.Deserialize<List<ClipboardEntry>>();
                     if (received is not null)
@@ -104,10 +104,10 @@ internal sealed class PeerClient : IDisposable
                         history.Merge(received);
                         if (type == "hello")
                         {
-                            _ = WriteAsync(writer, new { type = "history", entries = history.Snapshot() }, cancellationToken);
+                            await SendToWriterAsync(writer, new { type = "history", entries = history.Snapshot() }, cancellationToken).ConfigureAwait(false);
                             ClipboardEntry? newest = history.Newest;
                             if (newest is not null && (before is null || newest.Timestamp > before.Timestamp))
-                                RemoteClipboardReceived?.Invoke(newest.Text);
+                                RemoteClipboardReceived?.Invoke(newest);
                         }
                     }
                 }
@@ -117,7 +117,7 @@ internal sealed class PeerClient : IDisposable
             {
                 ClipboardEntry? entry = root.Deserialize<ClipboardEntry>();
                 if (entry is not null && history.Merge(new[] { entry }))
-                    RemoteClipboardReceived?.Invoke(entry.Text);
+                    RemoteClipboardReceived?.Invoke(entry);
             }
         }
         catch (JsonException)
@@ -130,25 +130,21 @@ internal sealed class PeerClient : IDisposable
     {
         StreamWriter? writer = activeWriter;
         if (writer is null) return;
-        await writerGate.WaitAsync().ConfigureAwait(false);
+        await SendToWriterAsync(writer, message, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task SendToWriterAsync(StreamWriter writer, object message, CancellationToken cancellationToken)
+    {
+        await writerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (activeWriter == writer)
-                await WriteAsync(writer, message, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch
-        {
-            // The receive loop reports the disconnect and reconnects.
+            if (activeWriter == writer || activeWriter is null)
+                await writer.WriteLineAsync(JsonSerializer.Serialize(message).AsMemory(), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             writerGate.Release();
         }
-    }
-
-    private static async Task WriteAsync(StreamWriter writer, object message, CancellationToken cancellationToken)
-    {
-        await writer.WriteLineAsync(JsonSerializer.Serialize(message).AsMemory(), cancellationToken).ConfigureAwait(false);
     }
 
     public void Dispose()

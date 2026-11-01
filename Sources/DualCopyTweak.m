@@ -2,6 +2,7 @@
 // DualCopy clipboard bridge for SpringBoard.
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <os/log.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
@@ -11,25 +12,35 @@
 #import <unistd.h>
 #import <errno.h>
 #import <string.h>
+#import <notify.h>
 
 #ifndef APELIN_BUILD_ID
 #define APELIN_BUILD_ID "development"
 #endif
 #ifndef APELIN_PACKAGE_ID
-#define APELIN_PACKAGE_ID "local.apelin.dualcopy"
+#define APELIN_PACKAGE_ID "com.eliastekdin.dualcopy"
 #endif
 
-static const uint16_t kDualCopyPort = 49732;
-static const NSUInteger kDualCopyHistoryLimit = 50;
+static const uint16_t kDualCopyDefaultPort = 49732;
+static const NSUInteger kDualCopyDefaultHistoryLimit = 50;
+static const NSUInteger kDualCopyDefaultMaxImageBytes = 4 * 1024 * 1024;
 static os_log_t gLog;
 static dispatch_queue_t gNetworkQueue;
 static NSMutableArray<NSDictionary *> *gHistory;
 static int gListenFD = -1;
 static int gClientFD = -1;
 static NSString *gLastClipboard;
+static NSData *gLastImageData;
 static dispatch_source_t gClipboardTimer;
 static dispatch_once_t gStartOnce;
 static void (*gOriginalDidFinishLaunching)(id, SEL, id);
+static int gSettingsNotificationToken;
+static BOOL gEnabled = YES;
+static BOOL gSyncImages = YES;
+static uint16_t gListenPort = kDualCopyDefaultPort;
+static NSUInteger gPollIntervalMilliseconds = 500;
+static NSUInteger gHistoryLimit = kDualCopyDefaultHistoryLimit;
+static NSUInteger gMaxImageBytes = kDualCopyDefaultMaxImageBytes;
 
 static os_log_t DualCopyLog(void) {
     static dispatch_once_t once;
@@ -39,8 +50,40 @@ static os_log_t DualCopyLog(void) {
     return gLog;
 }
 
+static id DualCopyPreference(NSString *key) {
+    CFTypeRef value = CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR(APELIN_PACKAGE_ID));
+    return CFBridgingRelease(value);
+}
+
+static NSUInteger DualCopyPositiveInteger(id value, NSUInteger fallback, NSUInteger minimum, NSUInteger maximum) {
+    if (![value respondsToSelector:@selector(unsignedIntegerValue)]) return fallback;
+    NSUInteger number = [value unsignedIntegerValue];
+    return number < minimum || number > maximum ? fallback : number;
+}
+
+static void DualCopyTrimAndSort(void);
+
+static void DualCopyReadSettings(void) {
+    id enabled = DualCopyPreference(@"enabled");
+    id images = DualCopyPreference(@"syncImages");
+    id port = DualCopyPreference(@"listenPort");
+    id interval = DualCopyPreference(@"pollInterval");
+    id historyLimit = DualCopyPreference(@"historyLimit");
+    id maxImageBytes = DualCopyPreference(@"maxImageBytes");
+    if ([enabled isKindOfClass:[NSNumber class]]) gEnabled = [enabled boolValue];
+    if ([images isKindOfClass:[NSNumber class]]) gSyncImages = [images boolValue];
+    gListenPort = (uint16_t)DualCopyPositiveInteger(port, kDualCopyDefaultPort, 1024, 65535);
+    gPollIntervalMilliseconds = DualCopyPositiveInteger(interval, 500, 100, 5000);
+    gHistoryLimit = DualCopyPositiveInteger(historyLimit, kDualCopyDefaultHistoryLimit, 10, 100);
+    gMaxImageBytes = DualCopyPositiveInteger(maxImageBytes, kDualCopyDefaultMaxImageBytes, 256 * 1024, 16 * 1024 * 1024);
+    if (gHistory != nil) DualCopyTrimAndSort();
+    os_log(DualCopyLog(), "Settings loaded: enabled=%{public}s images=%{public}s port=%u interval=%lu history=%lu maxImageBytes=%lu",
+           gEnabled ? "yes" : "no", gSyncImages ? "yes" : "no", gListenPort,
+           (unsigned long)gPollIntervalMilliseconds, (unsigned long)gHistoryLimit, (unsigned long)gMaxImageBytes);
+}
+
 static NSString *DualCopyHistoryPath(void) {
-    return @"/var/mobile/Library/Preferences/com.dualcopy.tweak-history.json";
+    return [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%s-history.json", APELIN_PACKAGE_ID];
 }
 
 static NSString *DualCopyBootstrapRoot(void) {
@@ -66,6 +109,22 @@ static NSString *DualCopyBootstrapRoot(void) {
 #endif
 }
 
+static BOOL DualCopyEntryValid(NSDictionary *entry) {
+    if (![entry[@"id"] isKindOfClass:[NSString class]]) return NO;
+    NSString *kind = entry[@"kind"];
+    if ([kind isEqualToString:@"image"]) return [entry[@"data"] isKindOfClass:[NSString class]];
+    return ([kind isEqualToString:@"text"] || kind == nil) && [entry[@"text"] isKindOfClass:[NSString class]] && [entry[@"text"] length] > 0;
+}
+
+static NSDictionary *DualCopyNormaliseEntry(NSDictionary *entry) {
+    if (![entry[@"kind"] isKindOfClass:[NSString class]]) {
+        NSMutableDictionary *copy = [entry mutableCopy];
+        copy[@"kind"] = @"text";
+        return copy;
+    }
+    return entry;
+}
+
 static void DualCopyLoadHistory(void) {
     gHistory = [NSMutableArray array];
     NSData *data = [NSData dataWithContentsOfFile:DualCopyHistoryPath()];
@@ -73,13 +132,11 @@ static void DualCopyLoadHistory(void) {
     id value = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![value isKindOfClass:[NSArray class]]) return;
     for (id item in (NSArray *)value) {
-        if ([item isKindOfClass:[NSDictionary class]] &&
-            [item[@"id"] isKindOfClass:[NSString class]] &&
-            [item[@"text"] isKindOfClass:[NSString class]]) {
-            [gHistory addObject:item];
-            if (gHistory.count >= kDualCopyHistoryLimit) break;
-        }
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *entry = DualCopyNormaliseEntry(item);
+        if (DualCopyEntryValid(entry)) [gHistory addObject:entry];
     }
+    DualCopyTrimAndSort();
 }
 
 static void DualCopySaveHistory(void) {
@@ -99,18 +156,20 @@ static void DualCopyTrimAndSort(void) {
         long long bt = [b[@"timestamp"] longLongValue];
         return at == bt ? NSOrderedSame : (at > bt ? NSOrderedAscending : NSOrderedDescending);
     }];
-    if (gHistory.count > kDualCopyHistoryLimit) {
-        [gHistory removeObjectsInRange:NSMakeRange(kDualCopyHistoryLimit, gHistory.count - kDualCopyHistoryLimit)];
+    if (gHistory.count > gHistoryLimit) {
+        [gHistory removeObjectsInRange:NSMakeRange(gHistoryLimit, gHistory.count - gHistoryLimit)];
     }
 }
 
 static BOOL DualCopyMergeEntry(NSDictionary *entry) {
-    NSString *identifier = entry[@"id"];
-    if (![identifier isKindOfClass:[NSString class]]) return NO;
+    NSDictionary *normalised = DualCopyNormaliseEntry(entry);
+    if (!DualCopyEntryValid(normalised)) return NO;
+    if ([normalised[@"kind"] isEqualToString:@"image"] && !gSyncImages) return NO;
+    NSString *identifier = normalised[@"id"];
     for (NSDictionary *existing in gHistory) {
         if ([existing[@"id"] isEqual:identifier]) return NO;
     }
-    [gHistory addObject:entry];
+    [gHistory addObject:normalised];
     DualCopyTrimAndSort();
     return YES;
 }
@@ -118,18 +177,14 @@ static BOOL DualCopyMergeEntry(NSDictionary *entry) {
 static BOOL DualCopyMergeEntries(NSArray *entries) {
     BOOL changed = NO;
     for (id value in entries) {
-        if ([value isKindOfClass:[NSDictionary class]] &&
-            [value[@"id"] isKindOfClass:[NSString class]] &&
-            [value[@"text"] isKindOfClass:[NSString class]]) {
-            changed |= DualCopyMergeEntry(value);
-        }
+        if ([value isKindOfClass:[NSDictionary class]]) changed |= DualCopyMergeEntry(value);
     }
     if (changed) DualCopySaveHistory();
     return changed;
 }
 
 static void DualCopySendObject(NSDictionary *object) {
-    if (gClientFD < 0) return;
+    if (!gEnabled || gClientFD < 0) return;
     NSError *error = nil;
     NSData *json = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
     if (json == nil || error != nil) return;
@@ -154,14 +209,32 @@ static void DualCopySendHistory(void) {
     DualCopySendObject(@{ @"type": @"history", @"entries": [gHistory copy] });
 }
 
-static void DualCopyApplyRemoteText(NSString *text) {
+static void DualCopyApplyRemoteEntry(NSDictionary *entry) {
+    if (!gEnabled) return;
+    NSString *kind = entry[@"kind"];
+    if ([kind isEqualToString:@"image"] && gSyncImages) {
+        NSData *imageData = [[NSData alloc] initWithBase64EncodedString:entry[@"data"] options:0];
+        if (imageData.length == 0 || imageData.length > gMaxImageBytes) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIImage *image = [UIImage imageWithData:imageData];
+            if (image == nil) return;
+            UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
+            gLastImageData = imageData;
+            gLastClipboard = [pasteboard.string copy];
+            pasteboard.image = image;
+            os_log(DualCopyLog(), "Applied an image received from Windows");
+        });
+        return;
+    }
+    NSString *text = entry[@"text"];
     if (text.length == 0) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
         if (![pasteboard.string isEqualToString:text]) {
             gLastClipboard = [text copy];
+            gLastImageData = nil;
             pasteboard.string = text;
-            os_log(DualCopyLog(), "Applied clipboard text received from Windows");
+            os_log(DualCopyLog(), "Applied text received from Windows");
         }
     });
 }
@@ -171,12 +244,14 @@ static void DualCopyHandleObject(NSDictionary *object) {
     if ([type isEqualToString:@"hello"]) {
         NSArray *entries = object[@"history"];
         NSDictionary *before = DualCopyNewest();
+        NSString *beforeID = before[@"id"];
+        long long beforeTimestamp = [before[@"timestamp"] longLongValue];
         BOOL changed = [entries isKindOfClass:[NSArray class]] && DualCopyMergeEntries(entries);
         DualCopySendHistory();
         NSDictionary *after = DualCopyNewest();
-        if (changed && after != nil && ![after[@"id"] isEqual:before[@"id"]] &&
-            [after[@"timestamp"] longLongValue] > [before[@"timestamp"] longLongValue]) {
-            DualCopyApplyRemoteText(after[@"text"]);
+        if (changed && after != nil && ![after[@"id"] isEqual:beforeID] &&
+            [after[@"timestamp"] longLongValue] > beforeTimestamp) {
+            DualCopyApplyRemoteEntry(after);
         }
         return;
     }
@@ -186,11 +261,10 @@ static void DualCopyHandleObject(NSDictionary *object) {
         return;
     }
     if ([type isEqualToString:@"clipboard"]) {
-        NSString *text = object[@"text"];
-        if (![text isKindOfClass:[NSString class]] || text.length == 0) return;
-        DualCopyMergeEntry(object);
-        DualCopySaveHistory();
-        DualCopyApplyRemoteText(text);
+        if (DualCopyMergeEntry(object)) {
+            DualCopySaveHistory();
+            DualCopyApplyRemoteEntry(object);
+        }
     }
 }
 
@@ -198,7 +272,7 @@ static void DualCopyReadClient(int clientFD) {
     gClientFD = clientFD;
     DualCopySendObject(@{ @"type": @"hello", @"device": @"ios", @"history": [gHistory copy] });
     NSMutableData *pending = [NSMutableData data];
-    uint8_t buffer[4096];
+    uint8_t buffer[8192];
     while (gClientFD == clientFD) {
         ssize_t count = recv(clientFD, buffer, sizeof(buffer), 0);
         if (count <= 0) break;
@@ -232,63 +306,113 @@ static void DualCopyAcceptLoop(void) {
     struct sockaddr_in address = {0};
     address.sin_len = sizeof(address);
     address.sin_family = AF_INET;
-    address.sin_port = htons(kDualCopyPort);
+    address.sin_port = htons(gListenPort);
     address.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(gListenFD, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(gListenFD, 1) != 0) {
-        os_log_error(DualCopyLog(), "Could not listen for Windows clipboard peer on port %u", kDualCopyPort);
+        os_log_error(DualCopyLog(), "Could not listen for Windows clipboard peer on port %u", gListenPort);
         close(gListenFD);
         gListenFD = -1;
         return;
     }
-    os_log(DualCopyLog(), "DualCopy listening for Windows on TCP port %u", kDualCopyPort);
+    os_log(DualCopyLog(), "DualCopy listening for Windows on TCP port %u", gListenPort);
     while (true) {
         int client = accept(gListenFD, NULL, NULL);
         if (client < 0) {
             if (errno == EINTR) continue;
             break;
         }
+        if (!gEnabled) {
+            close(client);
+            continue;
+        }
         DualCopyReadClient(client);
     }
 }
 
-static void DualCopyRecordLocalClipboard(NSString *text) {
-    if (text.length == 0 || [text isEqualToString:gLastClipboard]) return;
+static void DualCopyRecordLocalText(NSString *text) {
+    if (!gEnabled || text.length == 0 || [text isEqualToString:gLastClipboard]) return;
     gLastClipboard = [text copy];
+    gLastImageData = nil;
     dispatch_async(gNetworkQueue, ^{
-        NSString *identifier = [NSUUID UUID].UUIDString;
         NSDictionary *entry = @{
-            @"type": @"clipboard",
-            @"id": identifier,
-            @"text": text,
-            @"timestamp": @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0))
+            @"type": @"clipboard", @"kind": @"text", @"id": [NSUUID UUID].UUIDString,
+            @"text": text, @"timestamp": @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0))
         };
         DualCopyMergeEntry(entry);
         DualCopySaveHistory();
         DualCopySendObject(entry);
-        os_log(DualCopyLog(), "Published a local clipboard entry to Windows");
     });
 }
 
+static void DualCopyRecordLocalImage(NSData *imageData) {
+    if (!gEnabled || !gSyncImages || imageData.length == 0 || imageData.length > gMaxImageBytes || [imageData isEqual:gLastImageData]) return;
+    gLastImageData = [imageData copy];
+    NSString *encoded = [imageData base64EncodedStringWithOptions:0];
+    dispatch_async(gNetworkQueue, ^{
+        NSDictionary *entry = @{
+            @"type": @"clipboard", @"kind": @"image", @"id": [NSUUID UUID].UUIDString,
+            @"data": encoded, @"timestamp": @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0))
+        };
+        DualCopyMergeEntry(entry);
+        DualCopySaveHistory();
+        DualCopySendObject(entry);
+        os_log(DualCopyLog(), "Published an image clipboard entry to Windows");
+    });
+}
+
+static void DualCopyUpdateClipboardTimer(void) {
+    if (gClipboardTimer == nil) return;
+    dispatch_source_set_timer(gClipboardTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)gPollIntervalMilliseconds * NSEC_PER_MSEC),
+                              (uint64_t)gPollIntervalMilliseconds * NSEC_PER_MSEC,
+                              100 * NSEC_PER_MSEC);
+}
+
 static void DualCopyStartClipboardPolling(void) {
-    if (gClipboardTimer != nil) return;
+    if (gClipboardTimer != nil) {
+        DualCopyUpdateClipboardTimer();
+        return;
+    }
     UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
     gLastClipboard = [pasteboard.string copy];
+    UIImage *currentImage = gSyncImages ? pasteboard.image : nil;
+    gLastImageData = currentImage ? UIImagePNGRepresentation(currentImage) : nil;
     gClipboardTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(gClipboardTimer, dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), 500 * NSEC_PER_MSEC, 100 * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(gClipboardTimer, ^{
-        NSString *text = UIPasteboard.generalPasteboard.string;
-        if (text != nil && ![text isEqualToString:gLastClipboard]) DualCopyRecordLocalClipboard(text);
+        if (!gEnabled) return;
+        UIPasteboard *current = UIPasteboard.generalPasteboard;
+        NSString *text = current.string;
+        if (text.length > 0 && ![text isEqualToString:gLastClipboard]) {
+            DualCopyRecordLocalText(text);
+            return;
+        }
+        if (gSyncImages && current.image != nil) {
+            NSData *data = UIImagePNGRepresentation(current.image);
+            if (data.length > 0 && ![data isEqual:gLastImageData]) DualCopyRecordLocalImage(data);
+        }
     });
     dispatch_resume(gClipboardTimer);
+    DualCopyUpdateClipboardTimer();
+}
+
+static void DualCopySettingsChanged(int token) {
+    (void)token;
+    DualCopyReadSettings();
+    dispatch_async(dispatch_get_main_queue(), ^{ DualCopyUpdateClipboardTimer(); });
+    os_log(DualCopyLog(), "Settings changed; port changes take effect after respring");
 }
 
 static void DualCopyStart(void) {
     dispatch_once(&gStartOnce, ^{
-        gNetworkQueue = dispatch_queue_create("com.dualcopy.network", DISPATCH_QUEUE_SERIAL);
+        gNetworkQueue = dispatch_queue_create("com.eliastekdin.dualcopy.network", DISPATCH_QUEUE_SERIAL);
         dispatch_async(gNetworkQueue, ^{
+            DualCopyReadSettings();
+            notify_register_dispatch("com.eliastekdin.dualcopy/changed", &gSettingsNotificationToken, gNetworkQueue, ^(int token) {
+                DualCopySettingsChanged(token);
+            });
             DualCopyLoadHistory();
             dispatch_async(dispatch_get_main_queue(), ^{ DualCopyStartClipboardPolling(); });
-            DualCopyAcceptLoop();
+            if (gEnabled) DualCopyAcceptLoop();
         });
     });
 }
