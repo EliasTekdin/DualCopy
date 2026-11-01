@@ -336,7 +336,7 @@ internal sealed class MainForm : Form
     private void SaveConfiguration(bool showStatus)
     {
         if (addressBox is null) return;
-        settings = settings with
+        settings = (settings with
         {
             Address = addressBox.Text.Trim(),
             Port = (int)portBox.Value,
@@ -352,7 +352,7 @@ internal sealed class MainForm : Form
             ConvertRawImages = rawBox.Checked,
             DarkMode = darkBox.Checked,
             OpenInterfaceOnLaunch = launchBox.Checked
-        }.Normalized();
+        }).Normalized();
         settings.Save(SettingsPath());
         history.Limit = settings.HistoryLimit;
         clipboardTimer.Interval = settings.PollingInterval;
