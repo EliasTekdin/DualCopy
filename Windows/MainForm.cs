@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Windows.Forms;
@@ -17,7 +18,7 @@ internal sealed class MainForm : Form
     private readonly SynchronizationContext uiContext;
     private PeerClient peer;
     private string? lastClipboard;
-    private byte[]? lastImageData;
+    private string? lastImageFingerprint;
     private bool applyingRemote;
     private string lastStatus = "Starting…";
     private string phoneAddress;
@@ -70,10 +71,12 @@ internal sealed class MainForm : Form
         {
             if (Clipboard.ContainsImage())
             {
-                byte[]? data = ImageToPng(Clipboard.GetImage());
-                if (data is { Length: > 0 } && !data.AsSpan().SequenceEqual(lastImageData ?? Array.Empty<byte>()))
+                Image? image = Clipboard.GetImage();
+                string? fingerprint = ImageFingerprint(image);
+                byte[]? data = ImageToPng(image);
+                if (fingerprint is not null && data is { Length: > 0 } && fingerprint != lastImageFingerprint)
                 {
-                    lastImageData = data;
+                    lastImageFingerprint = fingerprint;
                     lastClipboard = null;
                     _ = peer.SendClipboardAsync(history.AddImage(Convert.ToBase64String(data)));
                 }
@@ -85,7 +88,7 @@ internal sealed class MainForm : Form
                 if (!string.IsNullOrEmpty(text) && text != lastClipboard)
                 {
                     lastClipboard = text;
-                    lastImageData = null;
+                    lastImageFingerprint = null;
                     _ = peer.SendClipboardAsync(history.AddText(text));
                 }
             }
@@ -108,14 +111,14 @@ internal sealed class MainForm : Form
                 using Image source = Image.FromStream(stream);
                 using Bitmap bitmap = new(source);
                 Clipboard.SetImage(bitmap);
-                lastImageData = data;
+                lastImageFingerprint = ImageFingerprint(bitmap);
                 lastClipboard = null;
             }
             else if (entry.Kind == "text" && !string.IsNullOrEmpty(entry.Text))
             {
                 Clipboard.SetText(entry.Text);
                 lastClipboard = entry.Text;
-                lastImageData = null;
+                lastImageFingerprint = null;
             }
         }
         catch (ExternalException)
@@ -130,6 +133,23 @@ internal sealed class MainForm : Form
         {
             applyingRemote = false;
         }
+    }
+
+    private static string? ImageFingerprint(Image? image)
+    {
+        if (image is null || image.Width <= 0 || image.Height <= 0) return null;
+
+        using Bitmap normalized = new(image.Width, image.Height, PixelFormat.Format32bppArgb);
+        using (Graphics graphics = Graphics.FromImage(normalized))
+        {
+            graphics.Clear(Color.Transparent);
+            graphics.DrawImage(image, new Rectangle(0, 0, normalized.Width, normalized.Height));
+        }
+
+        using MemoryStream stream = new();
+        normalized.Save(stream, ImageFormat.Png);
+        byte[] digest = SHA256.HashData(stream.ToArray());
+        return $"{normalized.Width}x{normalized.Height}:{Convert.ToHexString(digest)}";
     }
 
     private static byte[]? ImageToPng(Image? image)

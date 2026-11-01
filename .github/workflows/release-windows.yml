@@ -1,0 +1,80 @@
+name: Create Windows release
+
+on:
+  # This runs once when the release workflow is first published. Future releases
+  # can be started from Actions ▸ Create Windows release ▸ Run workflow.
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-windows.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag, for example v0.2.2'
+        required: true
+        default: 'v0.2.1'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish Windows executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseDirectory = Join-Path $PWD 'release'
+          New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
+
+          foreach ($runtime in @('win-x64', 'win-arm64')) {
+              $publishDirectory = Join-Path $PWD "Windows/dist/$runtime"
+              dotnet publish Windows/DualCopy.Windows.csproj `
+                  --configuration Release `
+                  --runtime $runtime `
+                  --self-contained true `
+                  --output $publishDirectory `
+                  -p:PublishSingleFile=true `
+                  -p:IncludeNativeLibrariesForSelfExtract=true `
+                  -p:EnableCompressionInSingleFile=true `
+                  -p:DebugType=None `
+                  -p:DebugSymbols=false
+
+              Copy-Item (Join-Path $publishDirectory 'DualCopy.exe') `
+                  (Join-Path $releaseDirectory "DualCopy-$runtime.exe")
+          }
+
+          $checksums = Get-ChildItem $releaseDirectory -Filter '*.exe' | Sort-Object Name | ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+              "$hash  $($_.Name)"
+          }
+          $checksums | Set-Content (Join-Path $releaseDirectory 'SHA256SUMS.txt')
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version || 'v0.2.1' }}
+          target_commitish: ${{ github.sha }}
+          name: DualCopy ${{ inputs.version || 'v0.2.1' }}
+          generate_release_notes: true
+          body: |
+            DualCopy Windows companion release.
+
+            Download `DualCopy-win-x64.exe` for standard Intel/AMD Windows 11 PCs, or `DualCopy-win-arm64.exe` for Windows on ARM. These are self-contained and do not require .NET, an SDK, or PowerShell.
+
+            Verify downloads with `SHA256SUMS.txt`.
+          files: |
+            release/DualCopy-win-x64.exe
+            release/DualCopy-win-arm64.exe
+            release/SHA256SUMS.txt
