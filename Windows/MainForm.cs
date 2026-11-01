@@ -599,7 +599,7 @@ internal sealed class MainForm : Form
     {
         int row = table.RowCount++; table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Panel textPanel = new() { Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(0, 5, 16, 6) };
-        Label titleLabel = new() { Text = title, AutoSize = true, Dock = DockStyle.Top, Font = new Font(SystemFonts.DefaultFont.FontFamily, FontStyle.Bold) };
+        Label titleLabel = new() { Text = title, AutoSize = true, Dock = DockStyle.Top, Font = new Font(SystemFonts.DefaultFont.FontFamily, SystemFonts.DefaultFont.Size, FontStyle.Bold) };
         Label descriptionLabel = new() { Text = description, AutoSize = true, MaximumSize = new Size(600, 0), Dock = DockStyle.Top };
         textPanel.Controls.Add(descriptionLabel); textPanel.Controls.Add(titleLabel);
         Panel editorPanel = new() { Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(0, 14, 0, 6), MinimumSize = new Size(220, 44) };
