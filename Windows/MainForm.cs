@@ -664,7 +664,7 @@ internal sealed class AboutForm : Form
 
         Label title = new() { Text = "DualCopy", Font = new Font(SystemFonts.DefaultFont, 22, FontStyle.Bold), Dock = DockStyle.Top, Height = 42 };
         Label subtitle = new() { Text = "Private clipboard sharing between iPhone and Windows", Dock = DockStyle.Top, Height = 34 };
-        Label details = new() { Text = "Version 0.3.0\n\nTransfers text, images, RAW camera files, and ordinary files over a trusted local TCP connection.\n\nAuthor: Ilyas Tekdin / DualCopy contributors", Dock = DockStyle.Top, Height = 112 };
+        Label details = new() { Text = "Version 0.3.1\n\nTransfers text, images, RAW camera files, and ordinary files over a trusted local TCP connection.\n\nAuthor: Ilyas Tekdin / DualCopy contributors", Dock = DockStyle.Top, Height = 112 };
         LinkLabel repository = new() { Text = "Open the DualCopy GitHub repository", AutoSize = true, Dock = DockStyle.Top, Height = 28 };
         repository.LinkClicked += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/EliasTekdin/DualCopy") { UseShellExecute = true });
         Button close = new() { Text = "Close", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 34 };
