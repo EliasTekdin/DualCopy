@@ -25,6 +25,7 @@ static const NSUInteger kDualCopyDefaultMaxImageBytes = 4 * 1024 * 1024;
 static const NSUInteger kDualCopyDefaultMaxFileBytes = 50 * 1024 * 1024;
 static os_log_t gLog;
 static dispatch_queue_t gNetworkQueue;
+static dispatch_queue_t gWorkQueue;
 static NSMutableArray<NSDictionary *> *gHistory;
 static int gListenFD = -1;
 static NSMutableSet<NSNumber *> *gPeerFDs;
@@ -519,8 +520,19 @@ static NSString *DualCopyFileExtensionForUTI(NSString *uti) {
 static NSDictionary *DualCopyPasteboardFile(UIPasteboard *pasteboard) {
     if (!gSyncFiles) return nil;
     for (NSDictionary *item in pasteboard.items) {
+        BOOL hasEncodedImage = NO;
+        for (NSString *uti in item) {
+            if ([uti isEqualToString:@"public.png"] || [uti isEqualToString:@"public.jpeg"] ||
+                [uti isEqualToString:@"public.jpg"] || [uti isEqualToString:@"public.tiff"] ||
+                [uti isEqualToString:@"public.heic"] || [uti isEqualToString:@"public.heif"] ||
+                [uti isEqualToString:@"public.gif"]) {
+                hasEncodedImage = YES;
+                break;
+            }
+        }
         for (NSString *uti in item) {
             if (![uti isKindOfClass:[NSString class]] || !DualCopyIsFileUTI(uti)) continue;
+            if (hasEncodedImage && [uti isEqualToString:@"public.data"]) continue;
             id value = item[uti];
             NSData *data = [value isKindOfClass:[NSData class]] ? value : nil;
             NSString *name = nil;
@@ -537,36 +549,63 @@ static NSDictionary *DualCopyPasteboardFile(UIPasteboard *pasteboard) {
     return nil;
 }
 
+static BOOL DualCopyIsImageUTI(NSString *uti) {
+    return [uti isEqualToString:@"public.png"] || [uti isEqualToString:@"public.jpeg"] ||
+           [uti isEqualToString:@"public.jpg"] || [uti isEqualToString:@"public.tiff"] ||
+           [uti isEqualToString:@"public.heic"] || [uti isEqualToString:@"public.heif"] ||
+           [uti isEqualToString:@"public.gif"];
+}
+
+static NSData *DualCopyPasteboardImageData(UIPasteboard *pasteboard) {
+    for (NSDictionary *item in pasteboard.items) {
+        for (NSString *uti in item) {
+            if (![uti isKindOfClass:[NSString class]] || !DualCopyIsImageUTI(uti)) continue;
+            id value = item[uti];
+            if ([value isKindOfClass:[NSData class]]) return value;
+        }
+    }
+    return nil;
+}
+
 static void DualCopyRecordLocalImage(NSData *imageData);
 
 static void DualCopyRecordLocalFile(NSDictionary *file) {
     NSData *data = file[@"data"];
     NSString *uti = file[@"uti"];
-    if (gConvertRawImages && gSyncImages && ([uti containsString:@"raw-image"] || [uti containsString:@"dng"])) {
-        UIImage *decoded = [UIImage imageWithData:data];
-        NSData *converted = DualCopyEncodedImage(decoded);
-        if (converted.length > 0) {
-            gLastFileData = [data copy];
-            DualCopyRecordLocalImage(converted);
-            os_log(DualCopyLog(), "Converted a raw image clipboard item before publishing it");
-            return;
-        }
-    }
     if (!gEnabled || !gSyncFiles || data.length == 0 || data.length > gMaxFileBytes || [data isEqual:gLastFileData]) return;
+
+    // Mark the pasteboard payload before doing any optional decode. This prevents
+    // a large RAW item from being queued repeatedly while conversion is running.
     gLastFileData = [data copy];
     gLastClipboard = nil;
     gLastImageData = nil;
+    BOOL isRawImage = [uti containsString:@"raw-image"] || [uti containsString:@"dng"];
+    NSString *name = file[@"name"];
     os_log(DualCopyLog(), "Detected a local file clipboard change (%lu bytes)", (unsigned long)data.length);
-    NSDictionary *entry = @{
-        @"type": @"clipboard", @"kind": @"file", @"id": NSUUID.UUID.UUIDString,
-        @"name": file[@"name"], @"uti": uti ?: @"public.data", @"data": [data base64EncodedStringWithOptions:0],
-        @"timestamp": @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0))
-    };
-    dispatch_async(gNetworkQueue, ^{
-        DualCopyMergeEntry(entry);
-        DualCopySaveHistory();
-        DualCopySendObject(entry);
-        os_log(DualCopyLog(), "Published a file clipboard entry to Windows");
+
+    dispatch_async(gWorkQueue, ^{
+        if (gConvertRawImages && gSyncImages && isRawImage) {
+            UIImage *decoded = [UIImage imageWithData:data];
+            NSData *converted = DualCopyEncodedImage(decoded);
+            if (converted.length > 0) {
+                DualCopyRecordLocalImage(converted);
+                os_log(DualCopyLog(), "Converted a raw image clipboard item off the SpringBoard main thread");
+                return;
+            }
+        }
+
+        NSDictionary *entry = @{
+            @"type": @"clipboard", @"kind": @"file", @"id": NSUUID.UUID.UUIDString,
+            @"name": name ?: @"DualCopy-file.bin", @"uti": uti ?: @"public.data",
+            @"data": [data base64EncodedStringWithOptions:0],
+            @"timestamp": @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0))
+        };
+        dispatch_async(gNetworkQueue, ^{
+            DualCopyMergeEntry(entry);
+            DualCopySaveHistory();
+            DualCopySendObject(entry);
+            os_log(DualCopyLog(), "Published a file clipboard entry to Windows");
+        });
     });
 }
 
@@ -604,10 +643,10 @@ static void DualCopyStartClipboardPolling(void) {
     UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
     gLastPasteboardChangeCount = pasteboard.changeCount;
     gLastClipboard = [pasteboard.string copy];
-    UIImage *currentImage = gSyncImages ? pasteboard.image : nil;
-    gLastImageData = currentImage ? DualCopyEncodedImage(currentImage) : nil;
     NSDictionary *currentFile = gSyncFiles ? DualCopyPasteboardFile(pasteboard) : nil;
     gLastFileData = currentFile[@"data"];
+    NSData *currentImageData = gSyncImages ? DualCopyPasteboardImageData(pasteboard) : nil;
+    gLastImageData = currentImageData;
     gClipboardTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(gClipboardTimer, ^{
         if (!gEnabled) return;
@@ -615,19 +654,19 @@ static void DualCopyStartClipboardPolling(void) {
         NSInteger changeCount = current.changeCount;
         gLastPasteboardChangeCount = changeCount;
 
-        if (gSyncImages && current.image != nil) {
-            NSData *data = DualCopyEncodedImage(current.image);
-            if (data.length > 0 && ![data isEqual:gLastImageData]) {
-                DualCopyRecordLocalImage(data);
-            } else if (data.length == 0 && ![data isEqual:gLastImageData]) {
-                os_log(DualCopyLog(), "Skipped an image clipboard change because it exceeds the configured image limit");
-            }
-            return;
-        }
-
         NSDictionary *file = gSyncFiles ? DualCopyPasteboardFile(current) : nil;
         if (file != nil) {
             DualCopyRecordLocalFile(file);
+            return;
+        }
+
+        if (gSyncImages) {
+            NSData *data = DualCopyPasteboardImageData(current);
+            if (data.length > 0 && ![data isEqual:gLastImageData]) {
+                DualCopyRecordLocalImage(data);
+            } else if (data.length == 0 && current.items.count > 0) {
+                os_log(DualCopyLog(), "Skipped an image clipboard change because no encoded image data was exposed");
+            }
             return;
         }
 
@@ -650,6 +689,7 @@ static void DualCopySettingsChanged(int token) {
 static void DualCopyStart(void) {
     dispatch_once(&gStartOnce, ^{
         gNetworkQueue = dispatch_queue_create("com.eliastekdin.dualcopy.network", DISPATCH_QUEUE_SERIAL);
+        gWorkQueue = dispatch_queue_create("com.eliastekdin.dualcopy.work", DISPATCH_QUEUE_SERIAL);
         gSocketLock = [NSLock new];
         gPeerFDs = [NSMutableSet set];
         dispatch_async(gNetworkQueue, ^{
