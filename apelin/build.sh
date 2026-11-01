@@ -10,7 +10,7 @@ stage="$(mktemp -d "${TMPDIR:?}dualcopy-stage.XXXXXX")"
 trap 'rm -rf -- "${stage:?}"' EXIT
 
 package_id="com.eliastekdin.dualcopy"
-version="0.2.0"
+version="0.3.0"
 bootstrap_root="${APELIN_TOOLCHAIN_BIN:?}"
 bootstrap_root="${bootstrap_root%/usr/lib/apelin/toolchains/*}"
 support_root="${bootstrap_root:?}/usr/share/apelin/development/wiki.qaq.apelin.dev.preferences/support"
@@ -88,7 +88,7 @@ Package: ${package_id}
 Name: DualCopy
 Version: ${version}
 Architecture: ${arch}
-Description: Share text and image clipboard history between SpringBoard and a Windows 11 companion over TCP.
+Description: Share text, images, raw camera data and files between SpringBoard and a Windows 11 companion over TCP.
 Maintainer: DualCopy contributors
 Author: DualCopy contributors
 Section: Tweaks

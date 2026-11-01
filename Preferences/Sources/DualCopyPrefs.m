@@ -30,10 +30,36 @@ static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcop
                                                                     CFSTR("com.eliastekdin.dualcopy")));
         [specifier setProperty:(existing != nil ? existing : value) forKey:@"default"];
     }
-    if (cell == PSEditTextCell && (key == nil || ![key isEqualToString:@"computerAddress"])) {
+    if (cell == PSEditTextCell && key != nil &&
+        ![key isEqualToString:@"computerAddress"] &&
+        ![key isEqualToString:@"imageFormat"]) {
         [specifier setProperty:@"NumbersAndPunctuation" forKey:@"keyboard"];
     }
     return specifier;
+}
+
+- (PSSpecifier *)dualCopyButtonSpecifier:(NSString *)label action:(SEL)action {
+    PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:label
+                                                               target:self
+                                                                  set:action
+                                                                  get:nil
+                                                               detail:nil
+                                                                 cell:PSButtonCell
+                                                                 edit:nil];
+    [specifier setProperty:NSStringFromSelector(action) forKey:@"action"];
+    return specifier;
+}
+
+- (void)clearHistory:(PSSpecifier *)specifier {
+    (void)specifier;
+    NSString *path = @"/var/mobile/Library/Preferences/com.eliastekdin.dualcopy-history.json";
+    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    notify_post(kDualCopyChangedNotification.UTF8String);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"History cleared"
+                                                                     message:@"DualCopy clipboard history has been deleted."
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
@@ -102,14 +128,42 @@ static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcop
                                                   default:@"50"
                                                      cell:PSEditTextCell]];
 
+        group = [PSSpecifier groupSpecifierWithName:@"History"];
+        [group setProperty:@"DualCopy stores recent entries for synchronisation. The Windows companion provides the full history viewer." forKey:@"footerText"];
+        [specifiers addObject:group];
+        [specifiers addObject:[self dualCopyButtonSpecifier:@"Clear stored clipboard history" action:@selector(clearHistory:)]];
+
+        group = [PSSpecifier groupSpecifierWithName:@"Files"];
+        [group setProperty:@"Transfers data-backed files such as DNG, PDF, TXT, ZIP, and DEB when the source app exposes them through the pasteboard." forKey:@"footerText"];
+        [specifiers addObject:group];
+        [specifiers addObject:[self dualCopyValueSpecifier:@"Sync files"
+                                                       key:@"syncFiles"
+                                                  default:@YES
+                                                     cell:PSSwitchCell]];
+        [specifiers addObject:[self dualCopyValueSpecifier:@"Maximum file size (bytes)"
+                                                       key:@"maxFileBytes"
+                                                  default:@"52428800"
+                                                     cell:PSEditTextCell]];
+
         group = [PSSpecifier groupSpecifierWithName:@"Images"];
-        [group setProperty:@"Images are sent as PNG over the same local connection."
-                    forKey:@"footerText"];
+        [group setProperty:@"Images are sent as PNG, JPEG, or the smallest compatible format. Raw camera data such as DNG is converted when iOS can decode it; otherwise it remains a file." forKey:@"footerText"];
         [specifiers addObject:group];
         [specifiers addObject:[self dualCopyValueSpecifier:@"Sync images"
                                                        key:@"syncImages"
                                                   default:@YES
                                                      cell:PSSwitchCell]];
+        [specifiers addObject:[self dualCopyValueSpecifier:@"Convert raw images when possible"
+                                                       key:@"convertRawImages"
+                                                  default:@YES
+                                                     cell:PSSwitchCell]];
+        [specifiers addObject:[self dualCopyValueSpecifier:@"Image format (auto, png, jpeg)"
+                                                       key:@"imageFormat"
+                                                  default:@"auto"
+                                                     cell:PSEditTextCell]];
+        [specifiers addObject:[self dualCopyValueSpecifier:@"JPEG quality (0.40-1.00)"
+                                                       key:@"jpegQuality"
+                                                  default:@"0.82"
+                                                     cell:PSEditTextCell]];
         [specifiers addObject:[self dualCopyValueSpecifier:@"Maximum image size (bytes)"
                                                        key:@"maxImageBytes"
                                                   default:@"4194304"

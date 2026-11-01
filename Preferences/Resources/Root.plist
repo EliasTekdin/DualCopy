@@ -6,92 +6,26 @@
   <string>DualCopy</string>
   <key>items</key>
   <array>
-    <dict>
-      <key>cell</key><string>PSGroupCell</string>
-      <key>label</key><string>Connection</string>
-      <key>footerText</key>
-      <string>This iPhone listens on the local port below and connects to Windows using the Windows address and port. The same port, 49732, may be used on both devices.</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSSwitchCell</string>
-      <key>label</key><string>Enabled</string>
-      <key>key</key><string>enabled</string>
-      <key>default</key><true/>
-      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
-      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSEditTextCell</string>
-      <key>label</key><string>Listen port (on this iPhone)</string>
-      <key>key</key><string>listenPort</string>
-      <key>default</key><string>49732</string>
-      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
-      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-      <key>keyboard</key><string>NumbersAndPunctuation</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSEditTextCell</string>
-      <key>label</key><string>Windows computer IP address</string>
-      <key>key</key><string>computerAddress</string>
-      <key>default</key><string></string>
-      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
-      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-      <key>placeholder</key><string>Required, e.g. 192.168.1.20</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSEditTextCell</string>
-      <key>label</key><string>Windows listening port</string>
-      <key>key</key><string>computerPort</string>
-      <key>default</key><string>49732</string>
-      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
-      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-      <key>keyboard</key><string>NumbersAndPunctuation</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSGroupCell</string>
-      <key>label</key><string>Performance</string>
-      <key>footerText</key><string>Shorter polling detects changes faster but uses more battery. Longer intervals are more efficient.</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSEditTextCell</string>
-      <key>label</key><string>Polling interval (ms)</string>
-      <key>key</key><string>pollInterval</string>
-      <key>default</key><string>500</string>
-      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
-      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-      <key>keyboard</key><string>NumbersAndPunctuation</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSEditTextCell</string>
-      <key>label</key><string>History limit</string>
-      <key>key</key><string>historyLimit</string>
-      <key>default</key><string>50</string>
-      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
-      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-      <key>keyboard</key><string>NumbersAndPunctuation</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSGroupCell</string>
-      <key>label</key><string>Images</string>
-      <key>footerText</key><string>Images are encoded as PNG and sent over the same local TCP connection. The size limit prevents large transfers from affecting responsiveness.</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSSwitchCell</string>
-      <key>label</key><string>Sync images</string>
-      <key>key</key><string>syncImages</string>
-      <key>default</key><true/>
-      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
-      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-    </dict>
-    <dict>
-      <key>cell</key><string>PSEditTextCell</string>
-      <key>label</key><string>Maximum image size (bytes)</string>
-      <key>key</key><string>maxImageBytes</string>
-      <key>default</key><string>4194304</string>
-      <key>defaults</key><string>com.eliastekdin.dualcopy</string>
-      <key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string>
-      <key>keyboard</key><string>NumbersAndPunctuation</string>
-    </dict>
+    <dict><key>cell</key><string>PSGroupCell</string><key>label</key><string>Connection</string><key>footerText</key><string>This iPhone listens on its listen port and connects to Windows using the Windows address and port. The same port may be used on both devices.</string></dict>
+    <dict><key>cell</key><string>PSSwitchCell</string><key>label</key><string>Enabled</string><key>key</key><string>enabled</string><key>default</key><true/><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>Listen port (on this iPhone)</string><key>key</key><string>listenPort</string><key>default</key><string>49732</string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string><key>keyboard</key><string>NumbersAndPunctuation</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>Windows computer IP address</string><key>key</key><string>computerAddress</string><key>default</key><string></string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string><key>placeholder</key><string>Required, e.g. 192.168.1.20</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>Windows listening port</string><key>key</key><string>computerPort</string><key>default</key><string>49732</string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string><key>keyboard</key><string>NumbersAndPunctuation</string></dict>
+
+    <dict><key>cell</key><string>PSGroupCell</string><key>label</key><string>Performance</string><key>footerText</key><string>Shorter polling detects changes faster but uses more battery. Longer intervals and smaller history use fewer resources.</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>Polling interval (ms)</string><key>key</key><string>pollInterval</string><key>default</key><string>500</string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string><key>keyboard</key><string>NumbersAndPunctuation</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>History limit</string><key>key</key><string>historyLimit</string><key>default</key><string>50</string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string><key>keyboard</key><string>NumbersAndPunctuation</string></dict>
+
+    <dict><key>cell</key><string>PSGroupCell</string><key>label</key><string>Files</string><key>footerText</key><string>Transfers data-backed files such as DNG, PDF, TXT, ZIP, and DEB when the source app exposes them through the pasteboard.</string></dict>
+    <dict><key>cell</key><string>PSSwitchCell</string><key>label</key><string>Sync files</string><key>key</key><string>syncFiles</string><key>default</key><true/><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>Maximum file size (bytes)</string><key>key</key><string>maxFileBytes</string><key>default</key><string>52428800</string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string><key>keyboard</key><string>NumbersAndPunctuation</string></dict>
+
+    <dict><key>cell</key><string>PSGroupCell</string><key>label</key><string>Images</string><key>footerText</key><string>Images use PNG, JPEG, or the smallest compatible format. Raw camera data such as DNG is converted when iOS can decode it; otherwise it remains a file.</string></dict>
+    <dict><key>cell</key><string>PSSwitchCell</string><key>label</key><string>Sync images</string><key>key</key><string>syncImages</string><key>default</key><true/><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string></dict>
+    <dict><key>cell</key><string>PSSwitchCell</string><key>label</key><string>Convert raw images when possible</string><key>key</key><string>convertRawImages</string><key>default</key><true/><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>Image format (auto, png, jpeg)</string><key>key</key><string>imageFormat</string><key>default</key><string>auto</string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>JPEG quality (0.40-1.00)</string><key>key</key><string>jpegQuality</string><key>default</key><string>0.82</string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string><key>keyboard</key><string>NumbersAndPunctuation</string></dict>
+    <dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>Maximum image size (bytes)</string><key>key</key><string>maxImageBytes</string><key>default</key><string>4194304</string><key>defaults</key><string>com.eliastekdin.dualcopy</string><key>PostNotification</key><string>com.eliastekdin.dualcopy/changed</string><key>keyboard</key><string>NumbersAndPunctuation</string></dict>
   </array>
 </dict>
 </plist>

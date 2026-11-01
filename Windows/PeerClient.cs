@@ -53,7 +53,18 @@ internal sealed class PeerClient : IDisposable
 
     public async Task SendClipboardAsync(ClipboardEntry entry)
     {
-        await SendAsync(new { type = "clipboard", id = entry.Id, kind = entry.Kind, text = entry.Text, data = entry.Data, timestamp = entry.Timestamp }).ConfigureAwait(false);
+        await SendAsync(new
+        {
+            type = "clipboard",
+            id = entry.Id,
+            kind = entry.Kind,
+            text = entry.Text,
+            data = entry.Data,
+            timestamp = entry.Timestamp,
+            name = entry.Name,
+            uti = entry.Uti,
+            mime = entry.Mime
+        }).ConfigureAwait(false);
     }
 
     public async Task<string> TestConnectionAsync(string targetAddress, int targetPort)

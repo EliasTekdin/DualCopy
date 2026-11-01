@@ -22,6 +22,7 @@
 static const uint16_t kDualCopyDefaultPort = 49732;
 static const NSUInteger kDualCopyDefaultHistoryLimit = 50;
 static const NSUInteger kDualCopyDefaultMaxImageBytes = 4 * 1024 * 1024;
+static const NSUInteger kDualCopyDefaultMaxFileBytes = 50 * 1024 * 1024;
 static os_log_t gLog;
 static dispatch_queue_t gNetworkQueue;
 static NSMutableArray<NSDictionary *> *gHistory;
@@ -30,18 +31,24 @@ static NSMutableSet<NSNumber *> *gPeerFDs;
 static NSLock *gSocketLock;
 static NSString *gLastClipboard;
 static NSData *gLastImageData;
+static NSData *gLastFileData;
 static NSInteger gLastPasteboardChangeCount;
 static dispatch_source_t gClipboardTimer;
 static dispatch_once_t gStartOnce;
 static int gSettingsNotificationToken;
 static BOOL gEnabled = YES;
 static BOOL gSyncImages = YES;
+static BOOL gSyncFiles = YES;
+static BOOL gConvertRawImages = YES;
 static uint16_t gListenPort = kDualCopyDefaultPort;
 static NSString *gComputerAddress;
 static uint16_t gComputerPort = kDualCopyDefaultPort;
 static NSUInteger gPollIntervalMilliseconds = 500;
 static NSUInteger gHistoryLimit = kDualCopyDefaultHistoryLimit;
 static NSUInteger gMaxImageBytes = kDualCopyDefaultMaxImageBytes;
+static NSUInteger gMaxFileBytes = kDualCopyDefaultMaxFileBytes;
+static NSString *gImageFormat = @"auto";
+static float gJPEGQuality = 0.82f;
 
 static os_log_t DualCopyLog(void) {
     static dispatch_once_t once;
@@ -67,26 +74,50 @@ static void DualCopyTrimAndSort(void);
 static void DualCopyReadSettings(void) {
     id enabled = DualCopyPreference(@"enabled");
     id images = DualCopyPreference(@"syncImages");
+    id files = DualCopyPreference(@"syncFiles");
+    id convertRawImages = DualCopyPreference(@"convertRawImages");
     id port = DualCopyPreference(@"listenPort");
     id computerAddress = DualCopyPreference(@"computerAddress");
     id computerPort = DualCopyPreference(@"computerPort");
     id interval = DualCopyPreference(@"pollInterval");
     id historyLimit = DualCopyPreference(@"historyLimit");
     id maxImageBytes = DualCopyPreference(@"maxImageBytes");
+    id maxFileBytes = DualCopyPreference(@"maxFileBytes");
+    id imageFormat = DualCopyPreference(@"imageFormat");
+    id jpegQuality = DualCopyPreference(@"jpegQuality");
     if ([enabled isKindOfClass:[NSNumber class]]) gEnabled = [enabled boolValue];
     if ([images isKindOfClass:[NSNumber class]]) gSyncImages = [images boolValue];
+    if ([files isKindOfClass:[NSNumber class]]) gSyncFiles = [files boolValue];
+    if ([convertRawImages isKindOfClass:[NSNumber class]]) gConvertRawImages = [convertRawImages boolValue];
     if ([computerAddress isKindOfClass:[NSString class]]) gComputerAddress = [computerAddress stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     else gComputerAddress = @"";
     gListenPort = (uint16_t)DualCopyPositiveInteger(port, kDualCopyDefaultPort, 1024, 65535);
     gComputerPort = (uint16_t)DualCopyPositiveInteger(computerPort, kDualCopyDefaultPort, 1024, 65535);
     gPollIntervalMilliseconds = DualCopyPositiveInteger(interval, 500, 100, 5000);
     gHistoryLimit = DualCopyPositiveInteger(historyLimit, kDualCopyDefaultHistoryLimit, 10, 100);
-    gMaxImageBytes = DualCopyPositiveInteger(maxImageBytes, kDualCopyDefaultMaxImageBytes, 256 * 1024, 16 * 1024 * 1024);
+    gMaxImageBytes = DualCopyPositiveInteger(maxImageBytes, kDualCopyDefaultMaxImageBytes, 256 * 1024, 50 * 1024 * 1024);
+    gMaxFileBytes = DualCopyPositiveInteger(maxFileBytes, kDualCopyDefaultMaxFileBytes, 256 * 1024, 200 * 1024 * 1024);
+    if ([imageFormat isKindOfClass:[NSString class]]) {
+        NSString *format = [(NSString *)imageFormat lowercaseString];
+        if ([@[@"auto", @"png", @"jpeg"] containsObject:format]) {
+            gImageFormat = format;
+        } else {
+            gImageFormat = @"auto";
+        }
+    } else {
+        gImageFormat = @"auto";
+    }
+    if ([jpegQuality respondsToSelector:@selector(doubleValue)]) {
+        double quality = [jpegQuality doubleValue];
+        gJPEGQuality = (float)(quality >= 0.40 && quality <= 1.0 ? quality : 0.82);
+    }
     if (gHistory != nil) DualCopyTrimAndSort();
-    os_log(DualCopyLog(), "Settings loaded: enabled=%{public}s images=%{public}s port=%u computer=%{public}s computerPort=%u interval=%lu history=%lu maxImageBytes=%lu",
-           gEnabled ? "yes" : "no", gSyncImages ? "yes" : "no", gListenPort,
+    os_log(DualCopyLog(), "Settings loaded: enabled=%{public}s images=%{public}s files=%{public}s rawConversion=%{public}s port=%u computer=%{public}s computerPort=%u interval=%lu history=%lu maxImageBytes=%lu maxFileBytes=%lu",
+           gEnabled ? "yes" : "no", gSyncImages ? "yes" : "no", gSyncFiles ? "yes" : "no",
+           gConvertRawImages ? "yes" : "no", gListenPort,
            gComputerAddress.UTF8String ?: "", gComputerPort,
-           (unsigned long)gPollIntervalMilliseconds, (unsigned long)gHistoryLimit, (unsigned long)gMaxImageBytes);
+           (unsigned long)gPollIntervalMilliseconds, (unsigned long)gHistoryLimit,
+           (unsigned long)gMaxImageBytes, (unsigned long)gMaxFileBytes);
 }
 
 static NSString *DualCopyHistoryPath(void) {
@@ -96,7 +127,9 @@ static NSString *DualCopyHistoryPath(void) {
 static BOOL DualCopyEntryValid(NSDictionary *entry) {
     if (![entry[@"id"] isKindOfClass:[NSString class]]) return NO;
     NSString *kind = entry[@"kind"];
-    if ([kind isEqualToString:@"image"]) return [entry[@"data"] isKindOfClass:[NSString class]];
+    if ([kind isEqualToString:@"image"] || [kind isEqualToString:@"file"]) {
+        return [entry[@"data"] isKindOfClass:[NSString class]] && [entry[@"data"] length] > 0;
+    }
     return ([kind isEqualToString:@"text"] || kind == nil) && [entry[@"text"] isKindOfClass:[NSString class]] && [entry[@"text"] length] > 0;
 }
 
@@ -149,6 +182,7 @@ static BOOL DualCopyMergeEntry(NSDictionary *entry) {
     NSDictionary *normalised = DualCopyNormaliseEntry(entry);
     if (!DualCopyEntryValid(normalised)) return NO;
     if ([normalised[@"kind"] isEqualToString:@"image"] && !gSyncImages) return NO;
+    if ([normalised[@"kind"] isEqualToString:@"file"] && !gSyncFiles) return NO;
     NSString *identifier = normalised[@"id"];
     for (NSDictionary *existing in gHistory) {
         if ([existing[@"id"] isEqual:identifier]) return NO;
@@ -230,6 +264,8 @@ static void DualCopySendHistory(void) {
     DualCopySendObject(@{ @"type": @"history", @"entries": [gHistory copy] });
 }
 
+static NSData *DualCopyEncodedImage(UIImage *image);
+
 static void DualCopyApplyRemoteEntry(NSDictionary *entry) {
     if (!gEnabled) return;
     NSString *kind = entry[@"kind"];
@@ -242,8 +278,41 @@ static void DualCopyApplyRemoteEntry(NSDictionary *entry) {
             UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
             gLastImageData = imageData;
             gLastClipboard = [pasteboard.string copy];
+            gLastFileData = nil;
             pasteboard.image = image;
             os_log(DualCopyLog(), "Applied an image received from Windows");
+        });
+        return;
+    }
+    if ([kind isEqualToString:@"file"] && gSyncFiles) {
+        NSData *fileData = [[NSData alloc] initWithBase64EncodedString:entry[@"data"] options:0];
+        NSString *uti = [entry[@"uti"] isKindOfClass:[NSString class]] ? entry[@"uti"] : @"public.data";
+        NSString *name = [entry[@"name"] isKindOfClass:[NSString class]] ? entry[@"name"] : @"";
+        if (fileData.length == 0 || fileData.length > gMaxFileBytes) return;
+        if (gConvertRawImages && gSyncImages && ([uti containsString:@"dng"] || [name.pathExtension.lowercaseString isEqualToString:@"dng"])) {
+            UIImage *decoded = [UIImage imageWithData:fileData];
+            NSData *converted = DualCopyEncodedImage(decoded);
+            if (converted.length > 0) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    UIImage *image = [UIImage imageWithData:converted];
+                    if (image == nil) return;
+                    UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
+                    pasteboard.image = image;
+                    gLastImageData = converted;
+                    gLastFileData = fileData;
+                    gLastClipboard = nil;
+                    os_log(DualCopyLog(), "Converted a raw image file received from Windows");
+                });
+                return;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
+            pasteboard.items = @[@{ uti: fileData }];
+            gLastFileData = fileData;
+            gLastClipboard = nil;
+            gLastImageData = nil;
+            os_log(DualCopyLog(), "Applied a file received from Windows (%lu bytes)", (unsigned long)fileData.length);
         });
         return;
     }
@@ -254,6 +323,7 @@ static void DualCopyApplyRemoteEntry(NSDictionary *entry) {
         if (![pasteboard.string isEqualToString:text]) {
             gLastClipboard = [text copy];
             gLastImageData = nil;
+            gLastFileData = nil;
             pasteboard.string = text;
             os_log(DualCopyLog(), "Applied text received from Windows");
         }
@@ -407,6 +477,7 @@ static void DualCopyRecordLocalText(NSString *text) {
     if (!gEnabled || text.length == 0 || [text isEqualToString:gLastClipboard]) return;
     gLastClipboard = [text copy];
     gLastImageData = nil;
+    gLastFileData = nil;
     os_log(DualCopyLog(), "Detected a local text clipboard change");
     dispatch_async(gNetworkQueue, ^{
         NSDictionary *entry = @{
@@ -422,11 +493,81 @@ static void DualCopyRecordLocalText(NSString *text) {
 static NSData *DualCopyEncodedImage(UIImage *image) {
     if (image == nil) return nil;
     NSData *png = UIImagePNGRepresentation(image);
+    NSData *jpeg = UIImageJPEGRepresentation(image, gJPEGQuality);
+    if ([gImageFormat isEqualToString:@"png"]) return png.length <= gMaxImageBytes ? png : nil;
+    if ([gImageFormat isEqualToString:@"jpeg"]) return jpeg.length <= gMaxImageBytes ? jpeg : nil;
     if (png.length > 0 && png.length <= gMaxImageBytes) return png;
-
-    NSData *jpeg = UIImageJPEGRepresentation(image, 0.82);
     if (jpeg.length > 0 && jpeg.length <= gMaxImageBytes) return jpeg;
     return nil;
+}
+
+static BOOL DualCopyIsFileUTI(NSString *uti) {
+    if ([uti isEqualToString:@"public.file-url"] || [uti isEqualToString:@"public.data"]) return YES;
+    return [uti containsString:@"raw-image"] || [uti containsString:@"dng"] ||
+           [uti containsString:@"pdf"] || [uti containsString:@"zip"] || [uti containsString:@"deb"];
+}
+
+static NSString *DualCopyFileExtensionForUTI(NSString *uti) {
+    if ([uti containsString:@"raw-image"] || [uti containsString:@"dng"]) return @"dng";
+    if ([uti containsString:@"pdf"]) return @"pdf";
+    if ([uti containsString:@"zip"]) return @"zip";
+    if ([uti containsString:@"deb"]) return @"deb";
+    if ([uti isEqualToString:@"public.plain-text"]) return @"txt";
+    return @"bin";
+}
+
+static NSDictionary *DualCopyPasteboardFile(UIPasteboard *pasteboard) {
+    if (!gSyncFiles) return nil;
+    for (NSDictionary *item in pasteboard.items) {
+        for (NSString *uti in item) {
+            if (![uti isKindOfClass:[NSString class]] || !DualCopyIsFileUTI(uti)) continue;
+            id value = item[uti];
+            NSData *data = [value isKindOfClass:[NSData class]] ? value : nil;
+            NSString *name = nil;
+            if ([value isKindOfClass:[NSURL class]]) {
+                NSURL *url = value;
+                name = url.lastPathComponent;
+                data = [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:nil];
+            }
+            if (data.length == 0 || data.length > gMaxFileBytes) continue;
+            if (name.length == 0) name = [NSString stringWithFormat:@"DualCopy-%@.%@", NSUUID.UUID.UUIDString, DualCopyFileExtensionForUTI(uti)];
+            return @{ @"data": data, @"name": name, @"uti": [uti isEqualToString:@"public.file-url"] ? @"public.data" : uti };
+        }
+    }
+    return nil;
+}
+
+static void DualCopyRecordLocalImage(NSData *imageData);
+
+static void DualCopyRecordLocalFile(NSDictionary *file) {
+    NSData *data = file[@"data"];
+    NSString *uti = file[@"uti"];
+    if (gConvertRawImages && gSyncImages && ([uti containsString:@"raw-image"] || [uti containsString:@"dng"])) {
+        UIImage *decoded = [UIImage imageWithData:data];
+        NSData *converted = DualCopyEncodedImage(decoded);
+        if (converted.length > 0) {
+            gLastFileData = [data copy];
+            DualCopyRecordLocalImage(converted);
+            os_log(DualCopyLog(), "Converted a raw image clipboard item before publishing it");
+            return;
+        }
+    }
+    if (!gEnabled || !gSyncFiles || data.length == 0 || data.length > gMaxFileBytes || [data isEqual:gLastFileData]) return;
+    gLastFileData = [data copy];
+    gLastClipboard = nil;
+    gLastImageData = nil;
+    os_log(DualCopyLog(), "Detected a local file clipboard change (%lu bytes)", (unsigned long)data.length);
+    NSDictionary *entry = @{
+        @"type": @"clipboard", @"kind": @"file", @"id": NSUUID.UUID.UUIDString,
+        @"name": file[@"name"], @"uti": uti ?: @"public.data", @"data": [data base64EncodedStringWithOptions:0],
+        @"timestamp": @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0))
+    };
+    dispatch_async(gNetworkQueue, ^{
+        DualCopyMergeEntry(entry);
+        DualCopySaveHistory();
+        DualCopySendObject(entry);
+        os_log(DualCopyLog(), "Published a file clipboard entry to Windows");
+    });
 }
 
 static void DualCopyRecordLocalImage(NSData *imageData) {
@@ -465,6 +606,8 @@ static void DualCopyStartClipboardPolling(void) {
     gLastClipboard = [pasteboard.string copy];
     UIImage *currentImage = gSyncImages ? pasteboard.image : nil;
     gLastImageData = currentImage ? DualCopyEncodedImage(currentImage) : nil;
+    NSDictionary *currentFile = gSyncFiles ? DualCopyPasteboardFile(pasteboard) : nil;
+    gLastFileData = currentFile[@"data"];
     gClipboardTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(gClipboardTimer, ^{
         if (!gEnabled) return;
@@ -479,6 +622,12 @@ static void DualCopyStartClipboardPolling(void) {
             } else if (data.length == 0 && ![data isEqual:gLastImageData]) {
                 os_log(DualCopyLog(), "Skipped an image clipboard change because it exceeds the configured image limit");
             }
+            return;
+        }
+
+        NSDictionary *file = gSyncFiles ? DualCopyPasteboardFile(current) : nil;
+        if (file != nil) {
+            DualCopyRecordLocalFile(file);
             return;
         }
 
