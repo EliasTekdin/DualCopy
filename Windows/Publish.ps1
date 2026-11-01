@@ -19,4 +19,4 @@ dotnet publish $project `
     -p:DebugType=None `
     -p:DebugSymbols=false
 
-Write-Host "Created $output\DualCopy.exe"
+Write-Host "Created $output\\DualCopy.exe"

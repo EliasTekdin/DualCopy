@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -21,53 +22,14 @@ internal static class DualCopyAppearance
 
     public static void Apply(Control control, bool dark)
     {
-        Color background = dark ? DarkBack : SystemColors.Control;
-        Color surface = dark ? DarkControl : SystemColors.Window;
-        Color text = dark ? DarkText : SystemColors.ControlText;
-
-        control.BackColor = background;
-        control.ForeColor = text;
-        ApplySpecial(control, dark, surface, text);
-
+        control.BackColor = dark ? DarkBack : SystemColors.Control;
+        control.ForeColor = dark ? DarkText : SystemColors.ControlText;
         foreach (Control child in control.Controls)
         {
-            child.ForeColor = text;
-            ApplySpecial(child, dark, surface, text);
+            child.BackColor = dark && child is not Button and not CheckBox and not ComboBox ? DarkControl : (dark ? DarkControl : SystemColors.Window);
+            child.ForeColor = dark ? DarkText : SystemColors.ControlText;
+            if (child is TextBoxBase textBox) textBox.BackColor = dark ? DarkControl : SystemColors.Window;
             Apply(child, dark);
-        }
-    }
-
-    private static void ApplySpecial(Control control, bool dark, Color surface, Color text)
-    {
-        if (control is TextBoxBase or NumericUpDown or ComboBox)
-        {
-            control.BackColor = surface;
-            control.ForeColor = text;
-        }
-        else if (control is Button or CheckBox)
-        {
-            control.BackColor = dark ? DarkControl : SystemColors.Control;
-            control.ForeColor = text;
-        }
-        else if (control is Label or LinkLabel)
-        {
-            control.BackColor = dark ? DarkBack : SystemColors.Control;
-            control.ForeColor = text;
-        }
-        else if (control is Form or Panel)
-        {
-            control.BackColor = dark ? DarkBack : SystemColors.Control;
-            control.ForeColor = text;
-        }
-
-        if (control is ComboBox combo)
-        {
-            combo.FlatStyle = FlatStyle.Standard;
-        }
-        if (control is LinkLabel link)
-        {
-            link.LinkColor = dark ? Color.LightSkyBlue : SystemColors.HotTrack;
-            link.ActiveLinkColor = dark ? Color.White : SystemColors.HotTrack;
         }
     }
 }
@@ -88,7 +50,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        settings = DualCopySettings.Load(SettingsPath()).Normalized();
+        settings = DualCopySettings.Load(SettingsPath());
         history.Limit = settings.HistoryLimit;
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         peer = new PeerClient(history, settings.Address, settings.Port);
@@ -115,48 +77,19 @@ internal sealed class MainForm : Form
         trayIcon.ContextMenuStrip = menu;
         trayIcon.DoubleClick += (_, _) => ShowConfigure();
 
-        Text = "DualCopy";
         ShowInTaskbar = false;
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         WindowState = FormWindowState.Minimized;
         Opacity = 0;
         Width = 1;
         Height = 1;
-        Shown += (_, _) =>
-        {
-            Hide();
-            if (settings.OpenInterfaceOnLaunch) ShowConfigure();
-        };
+        Load += (_, _) => Hide();
         FormClosed += (_, _) => { trayIcon.Visible = false; trayIcon.Dispose(); peer.Dispose(); };
 
         clipboardTimer = new System.Windows.Forms.Timer { Interval = settings.PollingInterval };
         clipboardTimer.Tick += (_, _) => PollClipboard();
         clipboardTimer.Start();
         peer.Start();
-    }
-
-    private void ShowConfigure()
-    {
-        using ConfigureForm dialog = new(settings, lastStatus, (address, port) => peer.TestConnectionAsync(address, port));
-        if (dialog.ShowDialog() != DialogResult.OK) return;
-        settings = dialog.SettingsValue.Normalized();
-        settings.Save(SettingsPath());
-        history.Limit = settings.HistoryLimit;
-        clipboardTimer.Interval = settings.PollingInterval;
-        peer.Configure(settings.Address, settings.Port);
-        peer.Start();
-    }
-
-    private void ShowHistory()
-    {
-        using HistoryForm dialog = new(history, settings);
-        dialog.ShowDialog();
-    }
-
-    private void ShowAbout()
-    {
-        using AboutForm dialog = new(settings.DarkMode);
-        dialog.ShowDialog();
     }
 
     private void PollClipboard()
@@ -211,6 +144,7 @@ internal sealed class MainForm : Form
         }
         catch (ExternalException)
         {
+            // Another process owns the clipboard; the next timer tick retries.
         }
         catch (IOException)
         {
@@ -294,6 +228,33 @@ internal sealed class MainForm : Form
         File.WriteAllBytes(path, data);
         return path;
     }
+
+    private void ShowConfigure()
+    {
+        using ConfigureForm dialog = new(settings, lastStatus, (address, port) => peer.TestConnectionAsync(address, port));
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        settings = dialog.SettingsValue.Normalized();
+        settings.Save(SettingsPath());
+        history.Limit = settings.HistoryLimit;
+        clipboardTimer.Interval = settings.PollingInterval;
+        peer.Configure(settings.Address, settings.Port);
+        peer.Start();
+    }
+
+    private void ShowHistory()
+    {
+        using HistoryForm dialog = new(history, settings);
+        dialog.ShowDialog(this);
+    }
+
+    private static void ShowAbout()
+    {
+        using AboutForm dialog = new();
+        dialog.ShowDialog();
+    }
+
+    private static string TrimStatus(string status) => status.Length > 55 ? status[..55] : status;
+    private static string SettingsPath() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DualCopy", "settings.json");
 
     private List<FilePayload> ReadFilePayloads(StringCollection paths)
     {
@@ -403,9 +364,6 @@ internal sealed class MainForm : Form
         _ => "application/octet-stream"
     };
 
-    private static string TrimStatus(string status) => status.Length > 55 ? status[..55] : status;
-    private static string SettingsPath() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DualCopy", "settings.json");
-
     private sealed record FilePayload(string Name, byte[] Data, string Mime);
 }
 
@@ -424,7 +382,6 @@ internal sealed class ConfigureForm : Form
     private readonly CheckBox filesBox = new();
     private readonly CheckBox rawBox = new();
     private readonly CheckBox darkBox = new();
-    private readonly CheckBox launchBox = new();
     private readonly Label statusLabel = new();
     private readonly Button testButton = new();
     private readonly Func<string, int, Task<string>> testConnection;
@@ -444,8 +401,7 @@ internal sealed class ConfigureForm : Form
         SyncImages = imagesBox.Checked,
         SyncFiles = filesBox.Checked,
         ConvertRawImages = rawBox.Checked,
-        DarkMode = darkBox.Checked,
-        OpenInterfaceOnLaunch = launchBox.Checked
+        DarkMode = darkBox.Checked
     };
 
     public ConfigureForm(DualCopySettings settings, string status, Func<string, int, Task<string>> testConnection)
@@ -460,20 +416,19 @@ internal sealed class ConfigureForm : Form
         ClientSize = new Size(590, 590);
 
         AddLabel("iPhone IP address", 16, 18); addressBox.SetBounds(220, 14, 340, 24); addressBox.Text = settings.Address; Controls.Add(addressBox);
-        AddLabel("iPhone listening port", 16, 50); ConfigureNumber(portBox, 220, 46, 65535, settings.Port, 1); AddControl(portBox);
+        AddLabel("iPhone listening port", 16, 50); ConfigureNumber(portBox, 220, 46, 65535, settings.Port, 100); AddControl(portBox);
         AddLabel("Polling interval (ms)", 16, 82); ConfigureNumber(intervalBox, 220, 78, 5000, settings.PollingInterval, 100); AddControl(intervalBox);
         AddLabel("History limit", 16, 114); ConfigureNumber(historyBox, 220, 110, 1000, settings.HistoryLimit, 10); AddControl(historyBox);
         AddLabel("Max image bytes (0 = unlimited)", 16, 146); ConfigureNumber(imageBytesBox, 220, 142, int.MaxValue, settings.MaxImageBytes, 0); AddControl(imageBytesBox);
         AddLabel("Max file bytes (0 = unlimited)", 16, 178); ConfigureNumber(fileBytesBox, 220, 174, int.MaxValue, settings.MaxFileBytes, 0); AddControl(fileBytesBox);
-        AddLabel("Image format", 16, 210); formatBox.SetBounds(220, 206, 120, 24); formatBox.DropDownStyle = ComboBoxStyle.DropDownList; formatBox.Items.AddRange(new object[] { "auto", "png", "jpeg" }); formatBox.SelectedItem = settings.ImageFormat; if (formatBox.SelectedIndex < 0) formatBox.SelectedIndex = 0; Controls.Add(formatBox);
+        AddLabel("Image format", 16, 210); formatBox.SetBounds(220, 206, 120, 24); formatBox.DropDownStyle = ComboBoxStyle.DropDownList; formatBox.Items.AddRange(new object[] { "auto", "png", "jpeg" }); formatBox.SelectedItem = settings.ImageFormat; Controls.Add(formatBox);
         AddLabel("JPEG quality", 16, 242); qualityBox.SetBounds(220, 238, 120, 24); qualityBox.DecimalPlaces = 2; qualityBox.Increment = 0.01M; qualityBox.Minimum = 0.40M; qualityBox.Maximum = 1.00M; qualityBox.Value = (decimal)Math.Clamp(settings.JpegQuality, 0.40f, 1.0f); Controls.Add(qualityBox);
         AddLabel("Receive folder", 16, 274); folderBox.SetBounds(220, 270, 340, 24); folderBox.Text = settings.ReceiveFolder; Controls.Add(folderBox);
 
         imagesBox.Text = "Sync images"; imagesBox.Checked = settings.SyncImages; imagesBox.SetBounds(16, 312, 180, 24); Controls.Add(imagesBox);
         filesBox.Text = "Sync files"; filesBox.Checked = settings.SyncFiles; filesBox.SetBounds(220, 312, 180, 24); Controls.Add(filesBox);
         rawBox.Text = "Convert raw images when possible"; rawBox.Checked = settings.ConvertRawImages; rawBox.SetBounds(16, 344, 260, 24); Controls.Add(rawBox);
-        darkBox.Text = "Dark mode"; darkBox.Checked = settings.DarkMode; darkBox.SetBounds(220, 344, 150, 24); Controls.Add(darkBox);
-        launchBox.Text = "Open interface on startup"; launchBox.Checked = settings.OpenInterfaceOnLaunch; launchBox.SetBounds(380, 344, 190, 24); Controls.Add(launchBox);
+        darkBox.Text = "Dark mode"; darkBox.Checked = settings.DarkMode; darkBox.SetBounds(220, 344, 180, 24); Controls.Add(darkBox);
 
         statusLabel.SetBounds(16, 388, 544, 38); statusLabel.AutoEllipsis = true; statusLabel.Text = "Status: " + status; Controls.Add(statusLabel);
         testButton.Text = "Test connection"; testButton.SetBounds(16, 440, 130, 30); testButton.Click += async (_, _) =>
@@ -508,7 +463,7 @@ internal sealed class HistoryForm : Form
     {
         this.history = history; this.settings = settings;
         Text = "DualCopy clipboard history"; StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(700, 430);
-        list.Dock = DockStyle.Fill; list.View = View.Details; list.FullRowSelect = true; list.HideSelection = false; list.Columns.Add("Type", 90); list.Columns.Add("Name / preview", 470); list.Columns.Add("Time", 120); Controls.Add(list);
+        list.Dock = DockStyle.Fill; list.View = View.Details; list.FullRowSelect = true; list.Columns.Add("Type", 90); list.Columns.Add("Name / preview", 470); list.Columns.Add("Time", 120); Controls.Add(list);
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, Height = 42, FlowDirection = FlowDirection.RightToLeft };
         Button clear = new() { Text = "Clear history", Width = 100 }; clear.Click += (_, _) => { history.Clear(); RefreshEntries(); };
         Button copy = new() { Text = "Copy selected", Width = 100 }; copy.Click += (_, _) => CopySelected();
@@ -548,11 +503,10 @@ internal sealed class HistoryForm : Form
 
 internal sealed class AboutForm : Form
 {
-    public AboutForm(bool dark)
+    public AboutForm()
     {
         Text = "About DualCopy"; StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(390, 210); Padding = new Padding(18);
-        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.4\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
+        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.0\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
         Controls.Add(text); Button close = new() { Text = "Close", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 30 }; Controls.Add(close);
-        DualCopyAppearance.Apply(this, dark);
     }
 }
