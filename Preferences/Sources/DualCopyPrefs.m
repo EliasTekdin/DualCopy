@@ -28,9 +28,7 @@ static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcop
     if (value != nil) {
         id existing = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,
                                                                     CFSTR("com.eliastekdin.dualcopy")));
-        if (existing == nil) {
-            [specifier setProperty:value forKey:@"default"];
-        }
+        [specifier setProperty:(existing != nil ? existing : value) forKey:@"default"];
     }
     if (cell == PSEditTextCell && (key == nil || ![key isEqualToString:@"computerAddress"])) {
         [specifier setProperty:@"NumbersAndPunctuation" forKey:@"keyboard"];
