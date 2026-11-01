@@ -1,0 +1,9 @@
+# Build output
+*.o
+*.dylib
+*.deb
+.WindowsBuild/
+
+# .NET output
+Windows/bin/
+Windows/obj/

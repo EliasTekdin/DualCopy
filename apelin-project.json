@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "projectID": "2a77094e-6b0e-4c7d-9f4b-1954d6efaa74",
+  "kind": "workspace",
+  "buildSystem": "external",
+  "displayName": "DualCopy",
+  "autoName": false,
+  "external": {
+    "script": "apelin/build.sh",
+    "interpreter": "sh",
+    "arguments": []
+  }
+}
