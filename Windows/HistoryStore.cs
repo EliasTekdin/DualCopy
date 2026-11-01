@@ -12,7 +12,8 @@ internal sealed class HistoryStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
     private const int Limit = 50;
@@ -94,7 +95,7 @@ internal sealed class HistoryStore
     private void SaveLocked()
     {
         string temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(entries));
+        File.WriteAllText(temporary, JsonSerializer.Serialize(entries, JsonOptions));
         File.Move(temporary, path, true);
     }
 }

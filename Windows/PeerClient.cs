@@ -13,7 +13,8 @@ internal sealed class PeerClient : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
     private readonly HistoryStore history;
@@ -219,7 +220,7 @@ internal sealed class PeerClient : IDisposable
             {
                 if (!writers.Contains(writer)) return;
             }
-            await writer.WriteLineAsync(JsonSerializer.Serialize(message).AsMemory(), cancellationToken).ConfigureAwait(false);
+            await writer.WriteLineAsync(JsonSerializer.Serialize(message, JsonOptions).AsMemory(), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
