@@ -18,7 +18,7 @@ static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcop
     PSSpecifier *specifier = [PSSpecifier preferenceSpecifierNamed:label
                                                                target:self
                                                                   set:@selector(setPreferenceValue:specifier:)
-                                                                  get:@selector(readPreferenceValue:specifier:)
+                                                                  get:@selector(readPreferenceValue:)
                                                                detail:nil
                                                                  cell:cell
                                                                  edit:nil];
