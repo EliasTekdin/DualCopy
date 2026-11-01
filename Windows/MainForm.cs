@@ -662,7 +662,7 @@ internal sealed class AboutForm : Form
         ClientSize = new Size(500, 300);
         Padding = new Padding(26);
 
-        Label title = new() { Text = "DualCopy", Font = new Font(SystemFonts.DefaultFont, 22, FontStyle.Bold), Dock = DockStyle.Top, Height = 42 };
+        Label title = new() { Text = "DualCopy", Font = new Font(SystemFonts.DefaultFont.FontFamily, 22, FontStyle.Bold), Dock = DockStyle.Top, Height = 42 };
         Label subtitle = new() { Text = "Private clipboard sharing between iPhone and Windows", Dock = DockStyle.Top, Height = 34 };
         Label details = new() { Text = "Version 0.3.1\n\nTransfers text, images, RAW camera files, and ordinary files over a trusted local TCP connection.\n\nAuthor: Ilyas Tekdin / DualCopy contributors", Dock = DockStyle.Top, Height = 112 };
         LinkLabel repository = new() { Text = "Open the DualCopy GitHub repository", AutoSize = true, Dock = DockStyle.Top, Height = 28 };
