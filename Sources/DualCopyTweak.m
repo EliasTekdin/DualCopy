@@ -26,7 +26,7 @@ static os_log_t gLog;
 static dispatch_queue_t gNetworkQueue;
 static NSMutableArray<NSDictionary *> *gHistory;
 static int gListenFD = -1;
-static int gClientFD = -1;
+static NSMutableSet<NSNumber *> *gPeerFDs;
 static NSLock *gSocketLock;
 static NSString *gLastClipboard;
 static NSData *gLastImageData;
@@ -167,35 +167,62 @@ static BOOL DualCopyMergeEntries(NSArray *entries) {
     return changed;
 }
 
-static void DualCopySendObject(NSDictionary *object) {
-    if (!gEnabled) return;
-    NSError *error = nil;
-    NSData *json = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
-    if (json == nil || error != nil) return;
-    NSMutableData *line = [json mutableCopy];
-    [line appendBytes:"\n" length:1];
+static BOOL DualCopySendLineLocked(NSData *line, int clientFD) {
+    if (gPeerFDs == nil || ![gPeerFDs containsObject:@(clientFD)]) return NO;
 
-    [gSocketLock lock];
-    int clientFD = gClientFD;
-    if (clientFD < 0) {
-        [gSocketLock unlock];
-        os_log(DualCopyLog(), "Cannot send clipboard object: no connected Windows peer");
-        return;
-    }
     const uint8_t *bytes = line.bytes;
     size_t remaining = line.length;
     while (remaining > 0) {
         ssize_t sent = send(clientFD, bytes, remaining, 0);
         if (sent <= 0) {
             if (errno == EINTR) continue;
+            [gPeerFDs removeObject:@(clientFD)];
             close(clientFD);
-            if (gClientFD == clientFD) gClientFD = -1;
-            [gSocketLock unlock];
-            return;
+            return NO;
         }
         bytes += sent;
         remaining -= (size_t)sent;
     }
+    return YES;
+}
+
+static NSData *DualCopyJSONLine(NSDictionary *object) {
+    NSError *error = nil;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
+    if (json == nil || error != nil) return nil;
+    NSMutableData *line = [json mutableCopy];
+    [line appendBytes:"\n" length:1];
+    return line;
+}
+
+static void DualCopyPrepareSocket(int fd) {
+    int noSignal = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal));
+}
+
+static void DualCopySendObjectToPeer(NSDictionary *object, int clientFD) {
+    if (!gEnabled) return;
+    NSData *line = DualCopyJSONLine(object);
+    if (line == nil) return;
+
+    [gSocketLock lock];
+    DualCopySendLineLocked(line, clientFD);
+    [gSocketLock unlock];
+}
+
+static void DualCopySendObject(NSDictionary *object) {
+    if (!gEnabled) return;
+    NSData *line = DualCopyJSONLine(object);
+    if (line == nil) return;
+
+    [gSocketLock lock];
+    NSArray<NSNumber *> *peers = [gPeerFDs allObjects];
+    if (peers.count == 0) {
+        [gSocketLock unlock];
+        os_log(DualCopyLog(), "Cannot send clipboard object: no connected Windows peer");
+        return;
+    }
+    for (NSNumber *peer in peers) DualCopySendLineLocked(line, peer.intValue);
     [gSocketLock unlock];
 }
 
@@ -262,34 +289,28 @@ static void DualCopyHandleObject(NSDictionary *object) {
     }
 }
 
-static BOOL DualCopyClaimClient(int clientFD) {
+static BOOL DualCopyAddPeer(int clientFD) {
     [gSocketLock lock];
-    BOOL claimed = gClientFD < 0;
-    if (claimed) gClientFD = clientFD;
+    if (gPeerFDs == nil) gPeerFDs = [NSMutableSet set];
+    [gPeerFDs addObject:@(clientFD)];
     [gSocketLock unlock];
-    return claimed;
+    return YES;
 }
 
-static void DualCopyReleaseClient(int clientFD) {
+static void DualCopyReleasePeer(int clientFD) {
     [gSocketLock lock];
-    if (gClientFD == clientFD) gClientFD = -1;
-    close(clientFD);
+    BOOL wasPeer = [gPeerFDs containsObject:@(clientFD)];
+    if (wasPeer) [gPeerFDs removeObject:@(clientFD)];
     [gSocketLock unlock];
+    if (wasPeer) close(clientFD);
 }
 
 static void DualCopyReadClient(int clientFD) {
-    if (!DualCopyClaimClient(clientFD)) {
-        close(clientFD);
-        return;
-    }
-    DualCopySendObject(@{ @"type": @"hello", @"device": @"ios", @"history": [gHistory copy] });
+    DualCopyAddPeer(clientFD);
+    DualCopySendObjectToPeer(@{ @"type": @"hello", @"device": @"ios", @"history": [gHistory copy] }, clientFD);
     NSMutableData *pending = [NSMutableData data];
     uint8_t buffer[8192];
     while (true) {
-        [gSocketLock lock];
-        BOOL active = gClientFD == clientFD;
-        [gSocketLock unlock];
-        if (!active) break;
         ssize_t count = recv(clientFD, buffer, sizeof(buffer), 0);
         if (count <= 0) break;
         [pending appendBytes:buffer length:(NSUInteger)count];
@@ -304,7 +325,7 @@ static void DualCopyReadClient(int clientFD) {
             if ([object isKindOfClass:[NSDictionary class]]) DualCopyHandleObject(object);
         }
     }
-    DualCopyReleaseClient(clientFD);
+    DualCopyReleasePeer(clientFD);
     os_log(DualCopyLog(), "Clipboard peer disconnected");
 }
 
@@ -321,7 +342,7 @@ static void DualCopyAcceptLoop(void) {
     address.sin_family = AF_INET;
     address.sin_port = htons(gListenPort);
     address.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(gListenFD, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(gListenFD, 1) != 0) {
+    if (bind(gListenFD, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(gListenFD, 8) != 0) {
         os_log_error(DualCopyLog(), "Could not listen for Windows clipboard peer on port %u", gListenPort);
         close(gListenFD);
         gListenFD = -1;
@@ -339,6 +360,7 @@ static void DualCopyAcceptLoop(void) {
             continue;
         }
         os_log(DualCopyLog(), "Accepted Windows clipboard peer");
+        DualCopyPrepareSocket(client);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ DualCopyReadClient(client); });
     }
 }
@@ -350,7 +372,7 @@ static void DualCopyConnectLoop(void) {
             continue;
         }
         [gSocketLock lock];
-        BOOL connected = gClientFD >= 0;
+        BOOL connected = gPeerFDs.count > 0;
         [gSocketLock unlock];
         if (connected) {
             sleep(2);
@@ -362,6 +384,7 @@ static void DualCopyConnectLoop(void) {
             sleep(2);
             continue;
         }
+        DualCopyPrepareSocket(client);
         struct sockaddr_in address = {0};
         address.sin_len = sizeof(address);
         address.sin_family = AF_INET;
@@ -464,6 +487,7 @@ static void DualCopyStart(void) {
     dispatch_once(&gStartOnce, ^{
         gNetworkQueue = dispatch_queue_create("com.eliastekdin.dualcopy.network", DISPATCH_QUEUE_SERIAL);
         gSocketLock = [NSLock new];
+        gPeerFDs = [NSMutableSet set];
         dispatch_async(gNetworkQueue, ^{
             DualCopyReadSettings();
             notify_register_dispatch("com.eliastekdin.dualcopy/changed", &gSettingsNotificationToken, gNetworkQueue, ^(int token) {

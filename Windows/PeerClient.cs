@@ -50,6 +50,22 @@ internal sealed class PeerClient : IDisposable
         await SendAsync(new { type = "clipboard", id = entry.Id, kind = entry.Kind, text = entry.Text, data = entry.Data, timestamp = entry.Timestamp }).ConfigureAwait(false);
     }
 
+    public async Task<string> TestConnectionAsync(string targetAddress, int targetPort)
+    {
+        if (string.IsNullOrWhiteSpace(targetAddress)) return "Connection test failed: enter an iPhone IP address.";
+        try
+        {
+            using TcpClient client = new();
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
+            await client.ConnectAsync(targetAddress.Trim(), targetPort, timeout.Token).ConfigureAwait(false);
+            return $"Connection test succeeded: {targetAddress.Trim()}:{targetPort}";
+        }
+        catch (Exception error)
+        {
+            return $"Connection test failed: {error.Message}";
+        }
+    }
+
     private async Task ListenAsync(CancellationToken cancellationToken)
     {
         TcpListener server = new(IPAddress.Any, port);

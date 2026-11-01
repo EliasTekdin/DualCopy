@@ -19,6 +19,7 @@ internal sealed class MainForm : Form
     private string? lastClipboard;
     private byte[]? lastImageData;
     private bool applyingRemote;
+    private string lastStatus = "Starting…";
     private string phoneAddress;
     private int phonePort;
 
@@ -34,7 +35,11 @@ internal sealed class MainForm : Form
             Visible = true,
             Text = "DualCopy: connecting"
         };
-        peer.StatusChanged += status => uiContext.Post(_ => trayIcon.Text = "DualCopy: " + TrimStatus(status), null);
+        peer.StatusChanged += status => uiContext.Post(_ =>
+        {
+            lastStatus = status;
+            trayIcon.Text = "DualCopy: " + TrimStatus(status);
+        }, null);
         peer.RemoteClipboardReceived += entry => uiContext.Post(_ => ApplyRemoteClipboard(entry), null);
 
         ContextMenuStrip menu = new();
@@ -139,7 +144,8 @@ internal sealed class MainForm : Form
 
     private void ShowConfigure()
     {
-        using ConfigureForm dialog = new(phoneAddress, phonePort);
+        using ConfigureForm dialog = new(phoneAddress, phonePort, lastStatus,
+            (address, port) => peer.TestConnectionAsync(address, port));
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         phoneAddress = dialog.PhoneAddress;
         phonePort = dialog.PhonePort;
@@ -180,31 +186,53 @@ internal sealed class ConfigureForm : Form
 {
     private readonly TextBox addressBox = new();
     private readonly NumericUpDown portBox = new();
+    private readonly Label statusLabel = new();
+    private readonly Button testButton = new();
+    private readonly Func<string, int, Task<string>> testConnection;
+
     public string PhoneAddress => addressBox.Text.Trim();
     public int PhonePort => (int)portBox.Value;
 
-    public ConfigureForm(string address, int port)
+    public ConfigureForm(string address, int port, string status, Func<string, int, Task<string>> testConnection)
     {
+        this.testConnection = testConnection;
         Text = "DualCopy connection";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = false;
         MaximizeBox = false;
-        ClientSize = new Size(360, 140);
+        ClientSize = new Size(420, 220);
 
         Controls.Add(new Label { Text = "iPhone IP address", Left = 16, Top = 18, AutoSize = true });
-        addressBox.SetBounds(145, 14, 195, 24);
+        addressBox.SetBounds(165, 14, 235, 24);
         addressBox.Text = address;
         Controls.Add(addressBox);
+
         Controls.Add(new Label { Text = "TCP port", Left = 16, Top = 54, AutoSize = true });
-        portBox.SetBounds(145, 50, 100, 24);
+        portBox.SetBounds(165, 50, 100, 24);
         portBox.Minimum = 1;
         portBox.Maximum = 65535;
         portBox.Value = Math.Clamp(port, 1, 65535);
         Controls.Add(portBox);
 
-        Button save = new() { Text = "Save", DialogResult = DialogResult.OK, Left = 180, Top = 96, Width = 75 };
-        Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 260, Top = 96, Width = 75 };
+        statusLabel.SetBounds(16, 88, 384, 30);
+        statusLabel.AutoEllipsis = true;
+        statusLabel.Text = "Status: " + status;
+        Controls.Add(statusLabel);
+
+        testButton.Text = "Test connection";
+        testButton.SetBounds(16, 128, 130, 28);
+        testButton.Click += async (_, _) =>
+        {
+            testButton.Enabled = false;
+            statusLabel.Text = "Status: testing connection…";
+            statusLabel.Text = "Status: " + await this.testConnection(PhoneAddress, PhonePort);
+            testButton.Enabled = true;
+        };
+        Controls.Add(testButton);
+
+        Button save = new() { Text = "Save", DialogResult = DialogResult.OK, Left = 245, Top = 178, Width = 75 };
+        Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 325, Top = 178, Width = 75 };
         Controls.Add(save);
         Controls.Add(cancel);
         AcceptButton = save;
