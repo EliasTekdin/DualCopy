@@ -551,7 +551,7 @@ internal sealed class AboutForm : Form
     public AboutForm(bool dark)
     {
         Text = "About DualCopy"; StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(390, 210); Padding = new Padding(18);
-        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.3\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
+        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.4\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
         Controls.Add(text); Button close = new() { Text = "Close", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 30 }; Controls.Add(close);
         DualCopyAppearance.Apply(this, dark);
     }
