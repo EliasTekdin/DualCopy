@@ -63,6 +63,12 @@ cat > "${stage:?}${APELIN_PREFIX}/Library/MobileSubstrate/DynamicLibraries/DualC
     <array>
       <string>com.apple.springboard</string>
     </array>
+    <key>Executables</key>
+    <array>
+      <string>SpringBoard</string>
+    </array>
+    <key>Mode</key>
+    <string>Any</string>
   </dict>
 </dict>
 </plist>

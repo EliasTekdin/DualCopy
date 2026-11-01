@@ -4,8 +4,6 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <os/log.h>
-#import <objc/runtime.h>
-#import <dlfcn.h>
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
@@ -34,7 +32,6 @@ static NSString *gLastClipboard;
 static NSData *gLastImageData;
 static dispatch_source_t gClipboardTimer;
 static dispatch_once_t gStartOnce;
-static void (*gOriginalDidFinishLaunching)(id, SEL, id);
 static int gSettingsNotificationToken;
 static BOOL gEnabled = YES;
 static BOOL gSyncImages = YES;
@@ -93,29 +90,6 @@ static void DualCopyReadSettings(void) {
 
 static NSString *DualCopyHistoryPath(void) {
     return [NSString stringWithFormat:@"/var/mobile/Library/Preferences/%s-history.json", APELIN_PACKAGE_ID];
-}
-
-static NSString *DualCopyBootstrapRoot(void) {
-#ifdef APELIN_BOOTSTRAP_ROOTHIDE
-    static NSString *root;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        static const char anchor = 0;
-        Dl_info info;
-        if (dladdr(&anchor, &info) == 0 || info.dli_fname == NULL) return;
-        NSString *path = [NSString stringWithUTF8String:info.dli_fname];
-        NSArray<NSString *> *parts = [path componentsSeparatedByString:@"/"];
-        for (NSUInteger i = 0; i < parts.count; i++) {
-            if ([parts[i] hasPrefix:@".jbroot-"]) {
-                root = [[parts subarrayWithRange:NSMakeRange(0, i + 1)] componentsJoinedByString:@"/"];
-                break;
-            }
-        }
-    });
-    return root;
-#else
-    return @"/var/jb";
-#endif
 }
 
 static BOOL DualCopyEntryValid(NSDictionary *entry) {
@@ -492,33 +466,9 @@ static void DualCopyStart(void) {
     });
 }
 
-static void DualCopyHookedDidFinishLaunching(id self, SEL selector, id application) {
-    if (gOriginalDidFinishLaunching != NULL) gOriginalDidFinishLaunching(self, selector, application);
-    DualCopyStart();
-}
-
-static void DualCopyInstallLaunchHook(void) {
-    Class springBoard = objc_getClass("SpringBoard");
-    if (springBoard == Nil) return;
-    IMP hookSymbol = (IMP)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
-    void *substrateHandle = NULL;
-    if (hookSymbol == NULL) {
-        NSString *root = DualCopyBootstrapRoot();
-        if (root.length > 0) {
-            NSString *path = [root stringByAppendingPathComponent:@"usr/lib/libsubstrate.dylib"];
-            substrateHandle = dlopen(path.fileSystemRepresentation, RTLD_NOW | RTLD_GLOBAL);
-            if (substrateHandle != NULL) hookSymbol = (IMP)dlsym(substrateHandle, "MSHookMessageEx");
-        }
-    }
-    if (hookSymbol == NULL) {
-        os_log_error(DualCopyLog(), "MSHookMessageEx is unavailable; clipboard bridge is disabled");
-        return;
-    }
-    typedef void (*HookFunction)(Class, SEL, IMP, IMP *);
-    ((HookFunction)hookSymbol)(springBoard, @selector(applicationDidFinishLaunching:), (IMP)DualCopyHookedDidFinishLaunching, (IMP *)&gOriginalDidFinishLaunching);
-}
-
 __attribute__((constructor)) static void DualCopyInitialize(void) {
     os_log(DualCopyLog(), "ApelinLoaded %{public}s in %{public}s", APELIN_BUILD_ID, getprogname());
-    DualCopyInstallLaunchHook();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DualCopyStart();
+    });
 }
