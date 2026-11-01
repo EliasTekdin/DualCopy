@@ -135,8 +135,8 @@ internal sealed class MainForm : Form
 
         Text = "DualCopy";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(900, 640);
-        ClientSize = new Size(1080, 760);
+        MinimumSize = new Size(760, 600);
+        ClientSize = new Size(820, 700);
         AutoScaleMode = AutoScaleMode.Font;
         FormBorderStyle = FormBorderStyle.Sizable;
         ShowInTaskbar = true;
@@ -182,17 +182,17 @@ internal sealed class MainForm : Form
 
     private void BuildInterface()
     {
-        Panel header = new() { Dock = DockStyle.Top, Height = 104, Padding = new Padding(30, 22, 30, 16) };
-        Label title = new() { Text = "DualCopy", AutoSize = true, Font = new Font(SystemFonts.DefaultFont.FontFamily, 22, FontStyle.Bold), Location = new Point(30, 20) };
-        Label subtitle = new() { Text = "Private clipboard sharing between your iPhone and Windows computer", AutoSize = true, Location = new Point(32, 60) };
+        Panel header = new() { Dock = DockStyle.Top, Height = 78, Padding = new Padding(24, 14, 24, 10) };
+        Label title = new() { Text = "DualCopy", AutoSize = true, Font = new Font(SystemFonts.DefaultFont.FontFamily, 18, FontStyle.Bold), Location = new Point(24, 12) };
+        Label subtitle = new() { Text = "Clipboard sharing between your iPhone and Windows computer", AutoSize = true, Location = new Point(26, 44) };
         connectionStatus.Text = "●  " + lastStatus;
         connectionStatus.AutoSize = true;
         connectionStatus.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        connectionStatus.Location = new Point(790, 38);
+        connectionStatus.Location = new Point(580, 28);
         header.Controls.Add(title); header.Controls.Add(subtitle); header.Controls.Add(connectionStatus);
 
         mainTabs.Dock = DockStyle.Fill;
-        mainTabs.Padding = new Point(18, 8);
+        mainTabs.Padding = new Point(12, 6);
         mainTabs.SelectedIndexChanged += (_, _) =>
         {
             if (mainTabs.SelectedIndex == 1) RefreshHistoryPage();
@@ -226,50 +226,14 @@ internal sealed class MainForm : Form
     private TabPage BuildConfigurePage()
     {
         TabPage page = NewTab("Configure");
-        FlowLayoutPanel flow = NewFlow(1000);
+        TabControl categories = new() { Dock = DockStyle.Fill, Padding = new Point(12, 6) };
+        categories.TabPages.Add(BuildConnectionCategory());
+        categories.TabPages.Add(BuildContentCategory());
+        categories.TabPages.Add(BuildPerformanceCategory());
+        categories.TabPages.Add(BuildAppearanceCategory());
 
-        flow.Controls.Add(CreateSection("Connection", "Choose the iPhone address and TCP port used by DualCopy. Both devices must be on a network that allows them to reach each other.", out TableLayoutPanel connection));
-        addressBox.Text = settings.Address;
-        AddSetting(connection, "iPhone IP address", "The iPhone’s local LAN or VPN IPv4 address. Windows uses this address when it initiates a connection.", addressBox);
-        ConfigureNumber(portBox, 1, 65535, settings.Port);
-        AddSetting(connection, "iPhone listening port", "The port where the iPhone accepts DualCopy traffic. It must match the iPhone’s Listen port in Settings. The default is 49732.", portBox, "TCP port");
-
-        flow.Controls.Add(CreateSection("Content synchronisation", "Select the types of clipboard content to exchange. Limits protect the computer from unexpected memory and disk usage; set a limit to 0 when you explicitly want unlimited Windows-side handling.", out TableLayoutPanel content));
-        imagesBox.Text = "Synchronise images"; imagesBox.Checked = settings.SyncImages;
-        AddSetting(content, "Images", "When enabled, copied pictures travel in both directions. Disabling it reduces memory, battery, and network use.", imagesBox);
-        rawBox.Text = "Convert RAW images when possible"; rawBox.Checked = settings.ConvertRawImages;
-        AddSetting(content, "RAW conversion", "Attempts to turn DNG and other RAW camera data into a normal image. Conversion is best effort; if decoding fails, the original file is retained.", rawBox);
-        formatBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        formatBox.Items.AddRange(new object[] { "auto", "png", "jpeg" });
-        formatBox.SelectedItem = settings.ImageFormat;
-        if (formatBox.SelectedIndex < 0) formatBox.SelectedIndex = 0;
-        AddSetting(content, "Output image format", "Auto chooses a compatible representation. PNG preserves lossless detail; JPEG is smaller but lossy. This also determines the format used when a RAW file can be converted.", formatBox);
-        qualityBox.DecimalPlaces = 2; qualityBox.Increment = 0.01M; qualityBox.Minimum = 0.40M; qualityBox.Maximum = 1.00M; qualityBox.Value = (decimal)Math.Clamp(settings.JpegQuality, 0.40f, 1.0f);
-        AddSetting(content, "JPEG quality (0.40–1.00)", "This is a quality fraction, not a file-size percentage. 0.40 creates smaller files with more artefacts; 0.82 is the balanced default; 1.00 preserves the most detail but usually creates larger files. PNG ignores this value.", qualityBox);
-        ConfigureNumber(imageBytesBox, 0, int.MaxValue, settings.MaxImageBytes);
-        AddSetting(content, "Maximum image size", "The largest encoded image DualCopy will send from Windows. 0 means unlimited on Windows. A limit reduces freezes and memory pressure, but an image above it is skipped.", imageBytesBox, "bytes; 0 = unlimited");
-        filesBox.Text = "Synchronise files"; filesBox.Checked = settings.SyncFiles;
-        AddSetting(content, "Files", "When enabled, copied files travel in both directions. This includes TXT, PDF, ZIP, DEB, and DNG when the source application exposes them as files.", filesBox);
-        ConfigureNumber(fileBytesBox, 0, int.MaxValue, settings.MaxFileBytes);
-        AddSetting(content, "Maximum file size", "The largest file DualCopy will read and transmit from Windows. 0 means unlimited on Windows, but very large files still consume RAM and may be refused by the iPhone limit.", fileBytesBox, "bytes; 0 = unlimited");
-        folderBox.Text = settings.ReceiveFolder;
-        AddSetting(content, "Receive folder", "Windows writes files received from the iPhone here. The folder is created automatically when the first file arrives.", folderBox);
-
-        flow.Controls.Add(CreateSection("Performance and history", "These settings balance detection speed, retained clipboard entries, CPU use, memory, and disk space.", out TableLayoutPanel performance));
-        ConfigureNumber(intervalBox, 100, 5000, settings.PollingInterval);
-        AddSetting(performance, "Polling interval", "How often Windows checks for a new clipboard item. 500 ms feels responsive; lower values add CPU use, while higher values save resources but add delay.", intervalBox, "milliseconds");
-        ConfigureNumber(historyBox, 10, 1000, settings.HistoryLimit);
-        AddSetting(performance, "History limit", "How many recent entries DualCopy retains for synchronisation and the Clipboard History tab. More entries use more storage and memory.", historyBox, "entries");
-
-        flow.Controls.Add(CreateSection("Appearance and startup", "Use a neutral light or dark appearance and decide whether launching the executable should immediately show the window or keep DualCopy in the notification area.", out TableLayoutPanel appearance));
-        darkBox.Text = "Use dark mode"; darkBox.Checked = settings.DarkMode;
-        darkBox.CheckedChanged += (_, _) => ApplyTheme();
-        AddSetting(appearance, "Theme", "Light mode uses a clean white and grey workspace. Dark mode uses charcoal surfaces and high-contrast text. No clipboard behaviour changes.", darkBox);
-        launchBox.Text = "Open the interface when DualCopy starts"; launchBox.Checked = settings.OpenInterfaceOnLaunch;
-        AddSetting(appearance, "Startup behaviour", "When enabled, double-clicking DualCopy.exe opens the Configure tab immediately. When disabled, DualCopy starts quietly in the notification area; double-click the tray icon whenever you want the interface.", launchBox);
-
-        Panel actions = new() { Width = 960, Height = 58, Padding = new Padding(2, 10, 2, 4), Margin = new Padding(0, 0, 0, 18) };
-        Button test = new() { Text = "Test connection", Width = 130, Height = 32, Location = new Point(2, 12) };
+        Panel footer = new() { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(4, 8, 4, 6) };
+        Button test = new() { Text = "Test connection", Width = 126, Height = 30, Location = new Point(4, 10) };
         test.Click += async (_, _) =>
         {
             test.Enabled = false;
@@ -277,14 +241,85 @@ internal sealed class MainForm : Form
             configureStatus.Text = "Status: " + await peer.TestConnectionAsync(addressBox.Text.Trim(), (int)portBox.Value);
             test.Enabled = true;
         };
-        Button save = new() { Text = "Save changes", Width = 120, Height = 32, Location = new Point(142, 12) };
+        Button save = new() { Text = "Save changes", Width = 116, Height = 30, Location = new Point(138, 10) };
         save.Click += (_, _) => SaveConfiguration(true);
         configureStatus.Text = "Status: " + lastStatus;
         configureStatus.AutoEllipsis = true;
-        configureStatus.Location = new Point(280, 18);
-        configureStatus.Size = new Size(650, 24);
-        actions.Controls.Add(test); actions.Controls.Add(save); actions.Controls.Add(configureStatus);
-        flow.Controls.Add(actions);
+        configureStatus.Location = new Point(270, 15);
+        configureStatus.Size = new Size(500, 24);
+        footer.Controls.Add(test); footer.Controls.Add(save); footer.Controls.Add(configureStatus);
+
+        page.Controls.Add(categories);
+        page.Controls.Add(footer);
+        return page;
+    }
+
+    private TabPage BuildConnectionCategory()
+    {
+        TabPage page = NewTab("Connection");
+        FlowLayoutPanel flow = NewFlow(700);
+        flow.Controls.Add(CreateSection("Phone ↔ PC connection", "Both devices use the same TCP channel. The iPhone listens for incoming connections while Windows connects to this address.", out TableLayoutPanel connection));
+        addressBox.Text = settings.Address;
+        AddSetting(connection, "iPhone IP address", "The iPhone’s local LAN or VPN IPv4 address. Windows uses this address when it initiates a connection.", addressBox);
+        ConfigureNumber(portBox, 1, 65535, settings.Port);
+        AddSetting(connection, "iPhone listening port", "The port where the iPhone accepts DualCopy traffic. It must match the iPhone’s Listen port in Settings. The default is 49732.", portBox, "TCP port");
+        page.Controls.Add(flow);
+        return page;
+    }
+
+    private TabPage BuildContentCategory()
+    {
+        TabPage page = NewTab("Content");
+        FlowLayoutPanel flow = NewFlow(700);
+        flow.Controls.Add(CreateSection("Images", "Pictures are transferred as PNG, JPEG, or another compatible representation. RAW conversion is best effort.", out TableLayoutPanel images));
+        imagesBox.Text = "Synchronise images"; imagesBox.Checked = settings.SyncImages;
+        AddSetting(images, "Images", "When enabled, copied pictures travel in both directions. Disabling it reduces memory, battery, and network use.", imagesBox);
+        rawBox.Text = "Convert RAW images when possible"; rawBox.Checked = settings.ConvertRawImages;
+        AddSetting(images, "RAW conversion", "Attempts to turn DNG and other RAW camera data into a normal image. If decoding fails, the original file is retained.", rawBox);
+        formatBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        formatBox.Items.Clear(); formatBox.Items.AddRange(new object[] { "auto", "png", "jpeg" });
+        formatBox.SelectedItem = settings.ImageFormat;
+        if (formatBox.SelectedIndex < 0) formatBox.SelectedIndex = 0;
+        AddSetting(images, "Output image format", "Auto chooses a compatible representation. PNG preserves lossless detail; JPEG is smaller but lossy.", formatBox);
+        qualityBox.DecimalPlaces = 2; qualityBox.Increment = 0.01M; qualityBox.Minimum = 0.40M; qualityBox.Maximum = 1.00M; qualityBox.Value = (decimal)Math.Clamp(settings.JpegQuality, 0.40f, 1.0f);
+        AddSetting(images, "JPEG quality (0.40–1.00)", "0.40 creates smaller files with more artefacts; 0.82 is the balanced default; 1.00 preserves the most detail but usually creates larger files. PNG ignores this value.", qualityBox);
+        ConfigureNumber(imageBytesBox, 0, int.MaxValue, settings.MaxImageBytes);
+        AddSetting(images, "Maximum image size", "The largest encoded image DualCopy will send from Windows. Set 0 for unlimited Windows-side handling.", imageBytesBox, "bytes; 0 = unlimited");
+
+        flow.Controls.Add(CreateSection("Files", "Files are copied as file entries and saved in the receive folder. This includes TXT, PDF, ZIP, DEB, and DNG when the source application exposes file data.", out TableLayoutPanel files));
+        filesBox.Text = "Synchronise files"; filesBox.Checked = settings.SyncFiles;
+        AddSetting(files, "Files", "When enabled, copied files travel in both directions. Disabling it leaves text and image synchronisation available.", filesBox);
+        ConfigureNumber(fileBytesBox, 0, int.MaxValue, settings.MaxFileBytes);
+        AddSetting(files, "Maximum file size", "The largest file DualCopy will read and transmit from Windows. Set 0 for unlimited Windows-side handling.", fileBytesBox, "bytes; 0 = unlimited");
+        folderBox.Text = settings.ReceiveFolder;
+        AddSetting(files, "Receive folder", "Windows writes files received from the iPhone here. The folder is created automatically when the first file arrives.", folderBox);
+        page.Controls.Add(flow);
+        return page;
+    }
+
+    private TabPage BuildPerformanceCategory()
+    {
+        TabPage page = NewTab("Performance");
+        FlowLayoutPanel flow = NewFlow(700);
+        flow.Controls.Add(CreateSection("Responsiveness and storage", "These controls balance detection speed and retained history against CPU, memory, battery, and disk use.", out TableLayoutPanel performance));
+        ConfigureNumber(intervalBox, 100, 5000, settings.PollingInterval);
+        AddSetting(performance, "Polling interval", "How often Windows checks for a new clipboard item. 500 ms is responsive; lower values use more CPU, while higher values save resources but add delay.", intervalBox, "milliseconds");
+        ConfigureNumber(historyBox, 10, 1000, settings.HistoryLimit);
+        AddSetting(performance, "History limit", "How many recent entries DualCopy retains for synchronisation and the Clipboard History tab. More entries use more storage and memory.", historyBox, "entries");
+        page.Controls.Add(flow);
+        return page;
+    }
+
+    private TabPage BuildAppearanceCategory()
+    {
+        TabPage page = NewTab("Appearance");
+        FlowLayoutPanel flow = NewFlow(700);
+        flow.Controls.Add(CreateSection("Appearance and startup", "Choose the visual style and decide whether launching DualCopy should show the window immediately.", out TableLayoutPanel appearance));
+        darkBox.Text = "Use dark mode"; darkBox.Checked = settings.DarkMode;
+        darkBox.CheckedChanged += (_, _) => ApplyTheme();
+        AddSetting(appearance, "Theme", "Light mode uses a simple white and grey layout. Dark mode uses charcoal surfaces and high-contrast text. This affects the Windows interface only.", darkBox);
+        launchBox.Text = "Open the interface when DualCopy starts"; launchBox.Checked = settings.OpenInterfaceOnLaunch;
+        AddSetting(appearance, "Startup behaviour", "When enabled, double-clicking DualCopy.exe opens Configure. When disabled, DualCopy starts quietly in the notification area; double-click the tray icon to open it.", launchBox);
         page.Controls.Add(flow);
         return page;
     }
@@ -582,14 +617,14 @@ internal sealed class MainForm : Form
     private static string TrimStatus(string status) => status.Length > 55 ? status[..55] : status;
     private static string SettingsPath() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DualCopy", "settings.json");
     private static TabPage NewTab(string name) => new() { Text = name, Padding = new Padding(14), AutoScroll = true, BackColor = DualCopyAppearance.LightBack };
-    private static FlowLayoutPanel NewFlow(int width) => new() { Dock = DockStyle.Top, Width = width, AutoSize = true, AutoScroll = false, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(4) };
+    private static FlowLayoutPanel NewFlow(int width) => new() { Dock = DockStyle.Fill, Width = width, AutoSize = false, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(2) };
 
     private static GroupBox CreateSection(string title, string intro, out TableLayoutPanel table)
     {
-        GroupBox section = new() { Text = title, Width = 970, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(16, 28, 16, 14), Margin = new Padding(0, 0, 0, 16) };
+        GroupBox section = new() { Text = title, Width = 700, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(12, 24, 12, 10), Margin = new Padding(0, 0, 0, 12) };
         table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, RowCount = 1, Padding = new Padding(0, 2, 0, 0) };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
-        Label introLabel = new() { Text = intro, AutoSize = true, MaximumSize = new Size(900, 0), Padding = new Padding(0, 0, 0, 12) };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
+        Label introLabel = new() { Text = intro, AutoSize = true, MaximumSize = new Size(650, 0), Padding = new Padding(0, 0, 0, 10) };
         table.Controls.Add(introLabel, 0, 0); table.SetColumnSpan(introLabel, 2); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         section.Controls.Add(table);
         return section;
