@@ -51,7 +51,7 @@ After installation, open Settings → Tweaks → DualCopy, set the Windows compu
 
 ## Repository status
 
-The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.0` adds file transport, raw-image conversion attempts, configurable transfer formats and limits, a Windows history viewer, dark mode, and About information.
+The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.1` adds file transport, raw-image conversion attempts, configurable transfer formats and limits, a Windows history viewer, dark mode, and About information.
 
 ## License
 
