@@ -52,7 +52,7 @@ After installation, open Settings → Tweaks → DualCopy, set the Windows compu
 
 ## Repository status
 
-The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.2` adds the redesigned resizable Windows workspace with Configure, Clipboard History, and About tabs, neutral light/dark themes, and the option to open the interface immediately at startup. It retains the RAW conversion, image handling, file transfer, and detailed settings introduced previously.
+The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.3` restores a compact Windows workspace with Configure, Clipboard History, and About tabs, plus clear Connection, Content, Performance, and Appearance categories. It retains the RAW conversion, image handling, file transfer, themes, startup controls, and detailed settings introduced previously.
 
 ## License
 

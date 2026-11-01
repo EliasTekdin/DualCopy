@@ -10,7 +10,7 @@ stage="$(mktemp -d "${TMPDIR:?}dualcopy-stage.XXXXXX")"
 trap 'rm -rf -- "${stage:?}"' EXIT
 
 package_id="com.eliastekdin.dualcopy"
-version="0.3.2"
+version="0.3.3"
 bootstrap_root="${APELIN_TOOLCHAIN_BIN:?}"
 bootstrap_root="${bootstrap_root%/usr/lib/apelin/toolchains/*}"
 support_root="${bootstrap_root:?}/usr/share/apelin/development/wiki.qaq.apelin.dev.preferences/support"
