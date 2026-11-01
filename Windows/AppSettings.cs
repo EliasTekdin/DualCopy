@@ -17,7 +17,8 @@ internal sealed record DualCopySettings(
     float JpegQuality,
     string ReceiveFolder,
     bool DarkMode,
-    bool ConvertRawImages = true)
+    bool ConvertRawImages = true,
+    bool OpenInterfaceOnLaunch = true)
 {
     public static DualCopySettings Defaults => new(
         "192.168.1.1",
