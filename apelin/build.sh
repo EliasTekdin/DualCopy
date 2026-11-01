@@ -51,6 +51,10 @@ clang -dynamiclib -fobjc-arc ${common_flags} \
   -framework Foundation -framework UIKit
 ldid -S "${tweak_dylib:?}"
 cp "${tweak_dylib:?}" "${stage:?}${APELIN_PREFIX}/Library/MobileSubstrate/DynamicLibraries/DualCopy.dylib"
+if [ "${APELIN_BOOTSTRAP}" = "roothide" ]; then
+  ln -s /usr/lib/DynamicPatches/AutoPatches.dylib \
+    "${stage:?}${APELIN_PREFIX}/Library/MobileSubstrate/DynamicLibraries/DualCopy.dylib.roothidepatch"
+fi
 
 cat > "${stage:?}${APELIN_PREFIX}/Library/MobileSubstrate/DynamicLibraries/DualCopy.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

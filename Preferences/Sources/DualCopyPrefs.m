@@ -1,4 +1,6 @@
 #import <Preferences/PSListController.h>
+#import <CoreFoundation/CoreFoundation.h>
+#import <notify.h>
 #import <os/log.h>
 
 @interface DualCopyPrefsRootListController : PSListController
@@ -34,6 +36,30 @@ static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcop
         [specifier setProperty:@"NumbersAndPunctuation" forKey:@"keyboard"];
     }
     return specifier;
+}
+
+- (id)readPreferenceValue:(PSSpecifier *)specifier {
+    NSString *key = [specifier propertyForKey:@"key"];
+    if (![key isKindOfClass:[NSString class]] || key.length == 0) return nil;
+
+    CFPropertyListRef stored = CFPreferencesCopyAppValue((__bridge CFStringRef)key,
+                                                          CFSTR("com.eliastekdin.dualcopy"));
+    if (stored != NULL) return CFBridgingRelease(stored);
+    return [specifier propertyForKey:@"default"];
+}
+
+- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
+    NSString *key = [specifier propertyForKey:@"key"];
+    if (![key isKindOfClass:[NSString class]] || key.length == 0) return;
+
+    CFPreferencesSetAppValue((__bridge CFStringRef)key,
+                             value == nil ? NULL : (__bridge CFPropertyListRef)value,
+                             CFSTR("com.eliastekdin.dualcopy"));
+    CFPreferencesAppSynchronize(CFSTR("com.eliastekdin.dualcopy"));
+    notify_post(kDualCopyChangedNotification.UTF8String);
+
+    os_log_t log = os_log_create("com.eliastekdin.dualcopy", "preferences");
+    os_log(log, "Stored preference %{public}@", key);
 }
 
 - (NSArray *)specifiers {

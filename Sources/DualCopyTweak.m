@@ -30,6 +30,7 @@ static int gClientFD = -1;
 static NSLock *gSocketLock;
 static NSString *gLastClipboard;
 static NSData *gLastImageData;
+static NSInteger gLastPasteboardChangeCount;
 static dispatch_source_t gClipboardTimer;
 static dispatch_once_t gStartOnce;
 static int gSettingsNotificationToken;
@@ -178,6 +179,7 @@ static void DualCopySendObject(NSDictionary *object) {
     int clientFD = gClientFD;
     if (clientFD < 0) {
         [gSocketLock unlock];
+        os_log(DualCopyLog(), "Cannot send clipboard object: no connected Windows peer");
         return;
     }
     const uint8_t *bytes = line.bytes;
@@ -336,6 +338,7 @@ static void DualCopyAcceptLoop(void) {
             close(client);
             continue;
         }
+        os_log(DualCopyLog(), "Accepted Windows clipboard peer");
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ DualCopyReadClient(client); });
     }
 }
@@ -366,6 +369,7 @@ static void DualCopyConnectLoop(void) {
         const char *host = gComputerAddress.UTF8String;
         if (host == NULL || inet_pton(AF_INET, host, &address.sin_addr) != 1 ||
             connect(client, (struct sockaddr *)&address, sizeof(address)) != 0) {
+            os_log(DualCopyLog(), "Windows connection attempt failed for %{public}s:%u", host ?: "", gComputerPort);
             close(client);
             sleep(2);
             continue;
@@ -380,6 +384,7 @@ static void DualCopyRecordLocalText(NSString *text) {
     if (!gEnabled || text.length == 0 || [text isEqualToString:gLastClipboard]) return;
     gLastClipboard = [text copy];
     gLastImageData = nil;
+    os_log(DualCopyLog(), "Detected a local text clipboard change");
     dispatch_async(gNetworkQueue, ^{
         NSDictionary *entry = @{
             @"type": @"clipboard", @"kind": @"text", @"id": [NSUUID UUID].UUIDString,
@@ -394,6 +399,7 @@ static void DualCopyRecordLocalText(NSString *text) {
 static void DualCopyRecordLocalImage(NSData *imageData) {
     if (!gEnabled || !gSyncImages || imageData.length == 0 || imageData.length > gMaxImageBytes || [imageData isEqual:gLastImageData]) return;
     gLastImageData = [imageData copy];
+    os_log(DualCopyLog(), "Detected a local image clipboard change (%lu bytes)", (unsigned long)imageData.length);
     NSString *encoded = [imageData base64EncodedStringWithOptions:0];
     dispatch_async(gNetworkQueue, ^{
         NSDictionary *entry = @{
@@ -421,6 +427,7 @@ static void DualCopyStartClipboardPolling(void) {
         return;
     }
     UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
+    gLastPasteboardChangeCount = pasteboard.changeCount;
     gLastClipboard = [pasteboard.string copy];
     UIImage *currentImage = gSyncImages ? pasteboard.image : nil;
     gLastImageData = currentImage ? UIImagePNGRepresentation(currentImage) : nil;
@@ -428,6 +435,10 @@ static void DualCopyStartClipboardPolling(void) {
     dispatch_source_set_event_handler(gClipboardTimer, ^{
         if (!gEnabled) return;
         UIPasteboard *current = UIPasteboard.generalPasteboard;
+        NSInteger changeCount = current.changeCount;
+        if (changeCount == gLastPasteboardChangeCount) return;
+        gLastPasteboardChangeCount = changeCount;
+
         NSString *text = current.string;
         if (text.length > 0 && ![text isEqualToString:gLastClipboard]) {
             DualCopyRecordLocalText(text);
