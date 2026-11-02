@@ -11,9 +11,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release tag, for example v0.3.5'
+        description: 'Release tag, for example v0.3.6'
         required: true
-        default: 'v0.3.5'
+        default: 'v0.3.6'
         type: string
 
 permissions:
@@ -64,9 +64,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.version || 'v0.3.5' }}
+          tag_name: ${{ inputs.version || 'v0.3.6' }}
           target_commitish: ${{ github.sha }}
-          name: DualCopy ${{ inputs.version || 'v0.3.5' }}
+          name: DualCopy ${{ inputs.version || 'v0.3.6' }}
           generate_release_notes: true
           body: |
             DualCopy Windows companion release.
