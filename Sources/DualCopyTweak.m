@@ -662,12 +662,12 @@ static void DualCopyStartClipboardPolling(void) {
 
         if (gSyncImages) {
             NSData *data = DualCopyPasteboardImageData(current);
-            if (data.length > 0 && ![data isEqual:gLastImageData]) {
-                DualCopyRecordLocalImage(data);
-            } else if (data.length == 0 && current.items.count > 0) {
-                os_log(DualCopyLog(), "Skipped an image clipboard change because no encoded image data was exposed");
+            if (data.length > 0) {
+                if (![data isEqual:gLastImageData]) {
+                    DualCopyRecordLocalImage(data);
+                }
+                return;
             }
-            return;
         }
 
         NSString *text = current.string;

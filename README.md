@@ -3,7 +3,7 @@
 DualCopy shares text, images, raw camera data, and ordinary files between a jailbroken iPhone and a Windows 11 PC over a local TCP connection.
 
 - **iPhone:** a SpringBoard tweak listens on TCP port `49732` by default, can initiate a connection to the configured Windows endpoint, keeps a configurable history, and applies text, images, and data-backed files received from Windows to the general pasteboard.
-- **Windows:** a .NET 8 WinForms tray application listens for the iPhone and also maintains an outgoing connection to the configured iPhone address. It can transfer text, images, DNG/PDF/TXT/ZIP/DEB and other file types, saves received files in a configurable folder, and includes a history viewer.
+- **Windows:** a .NET 8 WinForms tray application listens for the iPhone and also maintains an outgoing connection to the configured iPhone address. It can transfer text, images, DNG/PDF/TXT/ZIP/DEB and other file types, saves received files in a configurable folder, and includes a history viewer and local troubleshooting log.
 - **Settings:** the iPhone adds a `DualCopy` pane under Settings → Tweaks with connection, performance, history, file, and image conversion controls. The Windows Configure dialog has matching transfer limits, polling, history, receive-folder, format, quality, and dark-mode options.
 - **Protocol:** UTF-8 JSON Lines. The first message is `hello` with a history array; subsequent messages are `clipboard` entries. Entries use `kind` values `text`, `image`, or `file`; binary data is base64 encoded. Older clients can still exchange text and image entries.
 
@@ -41,7 +41,8 @@ To publish a self-contained x64 executable on Windows 11:
 powershell -ExecutionPolicy Bypass -File Windows\\Publish.ps1
 ```
 
-The tray menu provides **Configure**, **Clipboard history**, **About DualCopy**, and **Exit**. Configure the iPhone address and port, test the connection, choose transfer limits and image format, select the receive folder, and enable dark mode. The application listens on its configured port for an iPhone-initiated connection and retries its outgoing connection automatically.
+**Windows diagnostics:** the companion writes a rotating log to `%LOCALAPPDATA%\\DualCopy\\Logs\\DualCopy.log` and retains one previous log as `DualCopy.log.1`. Open the folder with **Open log folder** in the tray menu. Other tray actions remain **Configure**, **Clipboard history**, **About DualCopy**, and **Exit**. The log includes connection/listener status, clipboard item kinds and sizes, filtering decisions, and errors; clipboard payload contents are not logged.
+
 
 ## iPhone build and install
 
@@ -51,7 +52,7 @@ After installation, open Settings → Tweaks → DualCopy, set the Windows compu
 
 ## Repository status
 
-The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.6` adds file transport, raw-image conversion attempts, configurable transfer formats and limits, a Windows history viewer, dark mode, and About information.
+The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.7` fixes the iPhone text polling path when image sync is enabled and adds Windows-only troubleshooting logs.
 
 ## License
 

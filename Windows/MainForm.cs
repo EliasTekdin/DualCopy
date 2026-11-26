@@ -46,11 +46,13 @@ internal sealed class MainForm : Form
     private string? lastImageFingerprint;
     private string? lastFileFingerprint;
     private bool applyingRemote;
+    private DateTime lastClipboardBusyLogUtc;
     private string lastStatus = "Starting…";
 
     public MainForm()
     {
         settings = DualCopySettings.Load(SettingsPath());
+        DualCopyLog.Info($"Settings loaded: targetPort={settings.Port}, pollingMs={settings.PollingInterval}, syncImages={settings.SyncImages}, syncFiles={settings.SyncFiles}, imageLimitBytes={settings.MaxImageBytes}, fileLimitBytes={settings.MaxFileBytes}.");
         history.Limit = settings.HistoryLimit;
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         peer = new PeerClient(history, settings.Address, settings.Port);
@@ -70,6 +72,7 @@ internal sealed class MainForm : Form
 
         ContextMenuStrip menu = new();
         menu.Items.Add("Configure", null, (_, _) => ShowConfigure());
+        menu.Items.Add("Open log folder", null, (_, _) => DualCopyLog.OpenFolder());
         menu.Items.Add("Clipboard history", null, (_, _) => ShowHistory());
         menu.Items.Add("About DualCopy", null, (_, _) => ShowAbout());
         menu.Items.Add(new ToolStripSeparator());
@@ -106,6 +109,7 @@ internal sealed class MainForm : Form
                     lastFileFingerprint = fingerprint;
                     lastClipboard = null;
                     lastImageFingerprint = null;
+                    DualCopyLog.Info($"Local clipboard change detected: {files.Count} file(s), totalBytes={files.Sum(file => (long)file.Data.Length)}.");
                     foreach (FilePayload file in files)
                     {
                         ClipboardEntry entry = history.AddFile(file.Name, Convert.ToBase64String(file.Data), file.Mime);
@@ -120,12 +124,17 @@ internal sealed class MainForm : Form
                 using Image? image = Clipboard.GetImage();
                 string? fingerprint = ImageFingerprint(image);
                 byte[]? data = ImageToData(image, settings);
-                if (fingerprint is not null && data is { Length: > 0 } && fingerprint != lastImageFingerprint)
+                if (image is not null && fingerprint is not null && data is { Length: > 0 } && fingerprint != lastImageFingerprint)
                 {
                     lastImageFingerprint = fingerprint;
                     lastFileFingerprint = null;
                     lastClipboard = null;
+                    DualCopyLog.Info($"Local clipboard image detected: {image.Width}x{image.Height}, encodedBytes={data.Length}.");
                     _ = peer.SendClipboardAsync(history.AddImage(Convert.ToBase64String(data)));
+                }
+                else if (image is not null && fingerprint is not null && data is null)
+                {
+                    DualCopyLog.Warn($"Local clipboard image could not be encoded within the configured limit ({settings.MaxImageBytes} bytes).");
                 }
                 return;
             }
@@ -138,30 +147,46 @@ internal sealed class MainForm : Form
                     lastClipboard = text;
                     lastImageFingerprint = null;
                     lastFileFingerprint = null;
+                    DualCopyLog.Info($"Local clipboard text detected: {text.Length} characters; sending entry.");
                     _ = peer.SendClipboardAsync(history.AddText(text));
                 }
             }
         }
-        catch (ExternalException)
+        catch (ExternalException error)
         {
-            // Another process owns the clipboard; the next timer tick retries.
+            // Another process owns the clipboard; the next timer tick retries. Avoid log spam under contention.
+            if (DateTime.UtcNow - lastClipboardBusyLogUtc > TimeSpan.FromSeconds(30))
+            {
+                lastClipboardBusyLogUtc = DateTime.UtcNow;
+                DualCopyLog.Warn("Windows clipboard was temporarily unavailable; polling will retry.", error);
+            }
         }
-        catch (IOException)
+        catch (IOException error)
         {
             trayIcon.Text = "DualCopy: could not read a file";
+            DualCopyLog.Error("Could not read a local clipboard file.", error);
+        }
+        catch (Exception error)
+        {
+            DualCopyLog.Error("Unexpected error while polling the Windows clipboard.", error);
         }
     }
 
     private void ApplyRemoteClipboard(ClipboardEntry entry)
     {
+        DualCopyLog.Info($"Remote clipboard entry received: kind={entry.Kind}, id={entry.Id}.");
         try
         {
             applyingRemote = true;
             if (entry.Kind == "image" && !string.IsNullOrEmpty(entry.Data))
             {
-                if (!settings.SyncImages) return;
+                if (!settings.SyncImages) { DualCopyLog.Info("Ignored remote image because image syncing is disabled in Windows settings."); return; }
                 byte[] data = Convert.FromBase64String(entry.Data);
-                if (settings.MaxImageBytes > 0 && data.Length > settings.MaxImageBytes) return;
+                if (settings.MaxImageBytes > 0 && data.Length > settings.MaxImageBytes)
+                {
+                    DualCopyLog.Warn($"Ignored remote image of {data.Length} bytes; configured maximum is {settings.MaxImageBytes} bytes.");
+                    return;
+                }
                 using MemoryStream stream = new(data);
                 using Image source = Image.FromStream(stream);
                 using Bitmap bitmap = new(source);
@@ -169,18 +194,24 @@ internal sealed class MainForm : Form
                 lastImageFingerprint = ImageFingerprint(bitmap);
                 lastFileFingerprint = null;
                 lastClipboard = null;
+                DualCopyLog.Info($"Applied remote image to the Windows clipboard ({data.Length} bytes).");
             }
             else if (entry.Kind == "file" && !string.IsNullOrEmpty(entry.Data))
             {
-                if (!settings.SyncFiles) return;
+                if (!settings.SyncFiles) { DualCopyLog.Info("Ignored remote file because file syncing is disabled in Windows settings."); return; }
                 byte[] data = Convert.FromBase64String(entry.Data);
-                if (settings.MaxFileBytes > 0 && data.Length > settings.MaxFileBytes) return;
+                if (settings.MaxFileBytes > 0 && data.Length > settings.MaxFileBytes)
+                {
+                    DualCopyLog.Warn($"Ignored remote file of {data.Length} bytes; configured maximum is {settings.MaxFileBytes} bytes.");
+                    return;
+                }
                 string path = SaveReceivedFile(entry.Name, data);
                 Clipboard.SetFileDropList(new StringCollection { path });
                 lastFileFingerprint = FileFingerprint(new[] { new FilePayload(Path.GetFileName(path), data, MimeForPath(path)) });
                 lastImageFingerprint = null;
                 lastClipboard = null;
                 trayIcon.Text = "DualCopy: received " + TrimStatus(Path.GetFileName(path));
+                DualCopyLog.Info($"Applied remote file to the Windows clipboard ({data.Length} bytes).");
             }
             else if (entry.Kind == "text" && !string.IsNullOrEmpty(entry.Text))
             {
@@ -188,19 +219,27 @@ internal sealed class MainForm : Form
                 lastClipboard = entry.Text;
                 lastImageFingerprint = null;
                 lastFileFingerprint = null;
+                DualCopyLog.Info($"Applied remote text to the Windows clipboard ({entry.Text.Length} characters).");
             }
         }
-        catch (ExternalException)
+        catch (ExternalException error)
         {
             trayIcon.Text = "DualCopy: could not write clipboard";
+            DualCopyLog.Error("Could not apply a remote entry to the Windows clipboard.", error);
         }
-        catch (FormatException)
+        catch (FormatException error)
         {
             trayIcon.Text = "DualCopy: invalid data received";
+            DualCopyLog.Error("Remote clipboard entry contained invalid base64 data.", error);
         }
-        catch (ArgumentException)
+        catch (ArgumentException error)
         {
             trayIcon.Text = "DualCopy: unsupported image or file";
+            DualCopyLog.Error("Windows rejected a remote image or file payload.", error);
+        }
+        catch (Exception error)
+        {
+            DualCopyLog.Error("Unexpected error while applying a remote clipboard entry.", error);
         }
         finally
         {
@@ -238,6 +277,7 @@ internal sealed class MainForm : Form
         history.Limit = settings.HistoryLimit;
         clipboardTimer.Interval = settings.PollingInterval;
         peer.Configure(settings.Address, settings.Port);
+        DualCopyLog.Info($"Settings saved: target={settings.Address}:{settings.Port}, pollingMs={settings.PollingInterval}, syncImages={settings.SyncImages}, syncFiles={settings.SyncFiles}.");
         peer.Start();
     }
 
@@ -506,7 +546,7 @@ internal sealed class AboutForm : Form
     public AboutForm()
     {
         Text = "About DualCopy"; StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(390, 210); Padding = new Padding(18);
-        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.6\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
+        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.7\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
         Controls.Add(text); Button close = new() { Text = "Close", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 30 }; Controls.Add(close);
     }
 }

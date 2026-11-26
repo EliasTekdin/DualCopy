@@ -25,6 +25,7 @@ internal sealed class PeerClient : IDisposable
     private TcpListener? listener;
     private string address;
     private int port;
+    private string? lastConnectFailure;
 
     public event Action<ClipboardEntry>? RemoteClipboardReceived;
     public event Action<string>? StatusChanged;
@@ -47,6 +48,7 @@ internal sealed class PeerClient : IDisposable
         connectionCancellation?.Cancel();
         try { listener?.Stop(); } catch { }
         connectionCancellation = new CancellationTokenSource();
+        DualCopyLog.Info($"Starting Windows peer: listenPort={port}, target={address}:{port}.");
         _ = ListenAsync(connectionCancellation.Token);
         _ = ConnectAsync(connectionCancellation.Token);
     }
@@ -69,16 +71,23 @@ internal sealed class PeerClient : IDisposable
 
     public async Task<string> TestConnectionAsync(string targetAddress, int targetPort)
     {
-        if (string.IsNullOrWhiteSpace(targetAddress)) return "Connection test failed: enter an iPhone IP address.";
+        if (string.IsNullOrWhiteSpace(targetAddress))
+        {
+            DualCopyLog.Warn("Connection test could not start: no iPhone IP address was entered.");
+            return "Connection test failed: enter an iPhone IP address.";
+        }
         try
         {
             using TcpClient client = new();
             using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
             await client.ConnectAsync(targetAddress.Trim(), targetPort, timeout.Token).ConfigureAwait(false);
-            return $"Connection test succeeded: {targetAddress.Trim()}:{targetPort}";
+            string success = $"Connection test succeeded: {targetAddress.Trim()}:{targetPort}";
+            DualCopyLog.Info(success + ".");
+            return success;
         }
         catch (Exception error)
         {
+            DualCopyLog.Warn($"Connection test failed for {targetAddress.Trim()}:{targetPort}.", error);
             return $"Connection test failed: {error.Message}";
         }
     }
@@ -90,10 +99,12 @@ internal sealed class PeerClient : IDisposable
         try
         {
             server.Start();
+            DualCopyLog.Info($"Windows TCP listener is active on port {port}.");
             StatusChanged?.Invoke($"Listening on port {port}");
             while (!cancellationToken.IsCancellationRequested)
             {
                 TcpClient client = await server.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                DualCopyLog.Info($"Accepted incoming TCP peer from {client.Client.RemoteEndPoint}.");
                 _ = HandleConnectionAsync(client, cancellationToken);
             }
         }
@@ -103,6 +114,12 @@ internal sealed class PeerClient : IDisposable
         catch (SocketException error)
         {
             StatusChanged?.Invoke($"Listen failed: {error.Message}");
+            DualCopyLog.Error($"Windows TCP listener failed on port {port}.", error);
+        }
+        catch (Exception error)
+        {
+            StatusChanged?.Invoke($"Listen failed: {error.Message}");
+            DualCopyLog.Error("Unexpected failure in the Windows TCP listener.", error);
         }
         finally
         {
@@ -119,6 +136,8 @@ internal sealed class PeerClient : IDisposable
             {
                 using TcpClient client = new();
                 await client.ConnectAsync(address, port, cancellationToken).ConfigureAwait(false);
+                lastConnectFailure = null;
+                DualCopyLog.Info($"Connected from Windows to iPhone at {address}:{port}.");
                 await HandleConnectionAsync(client, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -128,6 +147,12 @@ internal sealed class PeerClient : IDisposable
             catch (Exception error)
             {
                 StatusChanged?.Invoke($"Outgoing connection: {error.Message}");
+                string failure = $"{address}:{port}: {error.GetType().Name}: {error.Message}";
+                if (!string.Equals(lastConnectFailure, failure, StringComparison.Ordinal))
+                {
+                    lastConnectFailure = failure;
+                    DualCopyLog.Warn($"Windows outgoing connection to iPhone failed for {address}:{port}.", error);
+                }
             }
 
             try { await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false); }
@@ -145,7 +170,9 @@ internal sealed class PeerClient : IDisposable
             AddWriter(writer);
             try
             {
+                string remote = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
                 StatusChanged?.Invoke("Connected to DualCopy peer");
+                DualCopyLog.Info($"Peer session started with {remote}; sending Windows hello/history.");
                 ClipboardEntry? before = history.Newest;
                 await SendToWriterAsync(writer, new { type = "hello", device = "windows", history = history.Snapshot() }, cancellationToken).ConfigureAwait(false);
 
@@ -162,10 +189,12 @@ internal sealed class PeerClient : IDisposable
             catch (Exception error)
             {
                 StatusChanged?.Invoke($"Peer disconnected: {error.Message}");
+                DualCopyLog.Warn("Peer session ended with a transport or protocol error.", error);
             }
             finally
             {
                 RemoveWriter(writer);
+                DualCopyLog.Info("Peer session closed.");
             }
         }
     }
@@ -185,7 +214,8 @@ internal sealed class PeerClient : IDisposable
                     List<ClipboardEntry>? received = historyElement.Deserialize<List<ClipboardEntry>>(JsonOptions);
                     if (received is not null)
                     {
-                        history.Merge(received);
+                        bool merged = history.Merge(received);
+                        DualCopyLog.Info($"Received {type} with {received.Count} history item(s); new entries merged={merged}.");
                         if (type == "hello")
                         {
                             await SendToWriterAsync(writer, new { type = "history", entries = history.Snapshot() }, cancellationToken).ConfigureAwait(false);
@@ -201,12 +231,22 @@ internal sealed class PeerClient : IDisposable
             {
                 ClipboardEntry? entry = root.Deserialize<ClipboardEntry>(JsonOptions);
                 if (entry is not null && history.Merge(new[] { entry }))
+                {
+                    DualCopyLog.Info($"Received new remote clipboard entry: kind={entry.Kind}, textChars={entry.Text?.Length ?? 0}, dataBase64Chars={entry.Data?.Length ?? 0}.");
                     RemoteClipboardReceived?.Invoke(entry);
+                }
+                else
+                {
+                    DualCopyLog.Warn("Received a clipboard message that was invalid or already present in Windows history.");
+                }
+                return;
             }
+            DualCopyLog.Warn($"Received unsupported peer message type '{type ?? "missing"}'.");
         }
-        catch (JsonException)
+        catch (JsonException error)
         {
             StatusChanged?.Invoke("Received an invalid clipboard message");
+            DualCopyLog.Warn("Could not parse a peer JSON message.", error);
         }
     }
 
@@ -214,8 +254,28 @@ internal sealed class PeerClient : IDisposable
     {
         StreamWriter[] active;
         lock (writersLock) active = writers.ToArray();
+        if (active.Length == 0)
+        {
+            DualCopyLog.Warn("A local clipboard update could not be sent because there is no connected peer writer.");
+            return;
+        }
+
+        int sent = 0;
         foreach (StreamWriter writer in active)
-            await SendToWriterAsync(writer, message, CancellationToken.None).ConfigureAwait(false);
+        {
+            try
+            {
+                await SendToWriterAsync(writer, message, CancellationToken.None).ConfigureAwait(false);
+                sent++;
+            }
+            catch (Exception error)
+            {
+                RemoveWriter(writer);
+                try { writer.Dispose(); } catch { }
+                DualCopyLog.Error("Failed writing a clipboard update to a connected peer.", error);
+            }
+        }
+        DualCopyLog.Info($"Clipboard update sent to {sent} connected peer writer(s).");
     }
 
     private async Task SendToWriterAsync(StreamWriter writer, object message, CancellationToken cancellationToken)

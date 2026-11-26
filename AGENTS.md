@@ -10,6 +10,5 @@ Do not hard-code the device's RootHide jbroot path. The build selects the bootst
 
 ## Testing
 
-After choosing a permanent package identifier, install the Apelin build, confirm it loaded into SpringBoard, respring if needed, then connect the Windows app to the phone's LAN/VPN IP on port `49732`. Exercise text in both directions, ordinary files in both directions, and supported images in both directions. For DNG, verify whether the source platform decodes it; if not, the original file should still arrive. Verify the unified log for connection, conversion, and clipboard events.
-
+After choosing a permanent package identifier, install the Apelin build, confirm it loaded into SpringBoard, respring if needed, then connect the Windows app to the phone's LAN/VPN IP on port `49732`. Exercise text in both directions, ordinary files in both directions, and supported images in both directions. For DNG, verify whether the source platform decodes it; if not, the original file should still arrive. Verify the unified log for connection, conversion, and clipboard events. On Windows, check `%LOCALAPPDATA%\\DualCopy\\Logs\\DualCopy.log` for peer/listener events, clipboard item kinds/sizes, rejected entries and failures; the tray menu opens the log folder. Clipboard contents are deliberately excluded from the Windows log.
 Windows code cannot be compiled on this iPhone because the .NET SDK is not installed here. Validate it on Windows 11 with `dotnet build`, or use the GitHub Actions Windows workflow.
