@@ -261,6 +261,20 @@ static void DualCopySendObject(NSDictionary *object) {
     [gSocketLock unlock];
 }
 
+static void DualCopySendWindowsDiagnostic(NSString *level, NSString *event, NSString *message, NSDictionary *details) {
+    if (!gEnabled) return;
+    NSMutableDictionary *diagnostic = [@{
+        @"type": @"diagnostic",
+        @"device": @"iphone",
+        @"level": level ?: @"info",
+        @"event": event ?: @"unknown",
+        @"message": message ?: @"",
+        @"timestamp": @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0))
+    } mutableCopy];
+    if ([details isKindOfClass:[NSDictionary class]]) [diagnostic addEntriesFromDictionary:details];
+    DualCopySendObject(diagnostic);
+}
+
 static void DualCopySendHistory(void) {
     DualCopySendObject(@{ @"type": @"history", @"entries": [gHistory copy] });
 }
@@ -270,18 +284,53 @@ static NSData *DualCopyEncodedImage(UIImage *image);
 static void DualCopyApplyRemoteEntry(NSDictionary *entry) {
     if (!gEnabled) return;
     NSString *kind = entry[@"kind"];
-    if ([kind isEqualToString:@"image"] && gSyncImages) {
-        NSData *imageData = [[NSData alloc] initWithBase64EncodedString:entry[@"data"] options:0];
-        if (imageData.length == 0 || imageData.length > gMaxImageBytes) return;
+    if ([kind isEqualToString:@"image"]) {
+        if (!gSyncImages) {
+            dispatch_async(gNetworkQueue, ^{
+                DualCopySendWindowsDiagnostic(@"warn", @"clipboard.remote_image_sync_disabled", @"Windows sent an image, but iPhone image syncing is disabled.", nil);
+            });
+            return;
+        }
+        NSString *encoded = [entry[@"data"] isKindOfClass:[NSString class]] ? entry[@"data"] : nil;
+        NSData *imageData = encoded != nil ? [[NSData alloc] initWithBase64EncodedString:encoded options:0] : nil;
+        if (imageData.length == 0) {
+            dispatch_async(gNetworkQueue, ^{
+                DualCopySendWindowsDiagnostic(@"error", @"clipboard.remote_image_invalid", @"Windows sent an image entry that iPhone could not decode from base64.", nil);
+            });
+            return;
+        }
+        if (imageData.length > gMaxImageBytes) {
+            NSUInteger configuredLimit = gMaxImageBytes;
+            dispatch_async(gNetworkQueue, ^{
+                DualCopySendWindowsDiagnostic(@"warn", @"clipboard.remote_image_rejected_too_large", @"Windows sent an image that exceeds the iPhone image-size limit.", @{
+                    @"imageBytes": @(imageData.length), @"maxImageBytes": @(configuredLimit)
+                });
+            });
+            return;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             UIImage *image = [UIImage imageWithData:imageData];
-            if (image == nil) return;
+            if (image == nil) {
+                dispatch_async(gNetworkQueue, ^{
+                    DualCopySendWindowsDiagnostic(@"error", @"clipboard.remote_image_decode_failed", @"iPhone could not decode the received image bytes.", @{
+                        @"imageBytes": @(imageData.length)
+                    });
+                });
+                return;
+            }
             UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
             gLastImageData = imageData;
             gLastClipboard = [pasteboard.string copy];
             gLastFileData = nil;
             pasteboard.image = image;
-            os_log(DualCopyLog(), "Applied an image received from Windows");
+            BOOL applied = pasteboard.hasImages;
+            os_log(DualCopyLog(), "Applied an image received from Windows: %d", applied);
+            dispatch_async(gNetworkQueue, ^{
+                DualCopySendWindowsDiagnostic(applied ? @"info" : @"error",
+                    applied ? @"clipboard.remote_image_applied" : @"clipboard.remote_image_apply_failed",
+                    applied ? @"iPhone applied the received image to its pasteboard." : @"iPhone set the received image but the pasteboard does not report image content.",
+                    @{@"imageBytes": @(imageData.length)});
+            });
         });
         return;
     }
@@ -623,12 +672,30 @@ static void DualCopyRecordLocalFile(NSDictionary *file) {
 }
 
 static void DualCopyRecordLocalImage(NSData *imageData) {
-    if (!gEnabled || !gSyncImages || imageData.length == 0 || imageData.length > gMaxImageBytes || [imageData isEqual:gLastImageData]) return;
+    if (!gEnabled || imageData.length == 0 || [imageData isEqual:gLastImageData]) return;
     gLastImageData = [imageData copy];
     gLastClipboard = nil;
     os_log(DualCopyLog(), "Detected a local image clipboard change (%lu bytes)", (unsigned long)imageData.length);
+    if (!gSyncImages) {
+        dispatch_async(gNetworkQueue, ^{
+            DualCopySendWindowsDiagnostic(@"warn", @"clipboard.image_sync_disabled", @"iPhone detected clipboard image data, but image syncing is disabled.", nil);
+        });
+        return;
+    }
+    if (imageData.length > gMaxImageBytes) {
+        os_log_error(DualCopyLog(), "Local image clipboard data exceeds the configured limit (%lu > %lu bytes)", (unsigned long)imageData.length, (unsigned long)gMaxImageBytes);
+        dispatch_async(gNetworkQueue, ^{
+            DualCopySendWindowsDiagnostic(@"warn", @"clipboard.image_rejected_too_large", @"iPhone extracted the clipboard image but rejected it because it exceeds the configured image limit.", @{
+                @"imageBytes": @(imageData.length), @"maxImageBytes": @(gMaxImageBytes)
+            });
+        });
+        return;
+    }
     NSString *encoded = [imageData base64EncodedStringWithOptions:0];
     dispatch_async(gNetworkQueue, ^{
+        DualCopySendWindowsDiagnostic(@"info", @"clipboard.image_send_attempt", @"iPhone extracted and encoded a clipboard image; sending the image entry to Windows.", @{
+            @"imageBytes": @(imageData.length), @"base64Chars": @(encoded.length)
+        });
         NSDictionary *entry = @{
             @"type": @"clipboard", @"kind": @"image", @"id": [NSUUID UUID].UUIDString,
             @"data": encoded, @"timestamp": @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0))
@@ -683,8 +750,18 @@ static void DualCopyStartClipboardPolling(void) {
                 return;
             }
             if (pasteboardChanged && current.hasImages) {
-                os_log_error(DualCopyLog(), "Pasteboard reported image content, but DualCopy could not extract or encode it within the configured image limit (%lu bytes)", (unsigned long)gMaxImageBytes);
+                NSUInteger configuredLimit = gMaxImageBytes;
+                os_log_error(DualCopyLog(), "Pasteboard reported image content, but DualCopy could not extract or encode it within the configured image limit (%lu bytes)", (unsigned long)configuredLimit);
+                dispatch_async(gNetworkQueue, ^{
+                    DualCopySendWindowsDiagnostic(@"error", @"clipboard.image_extraction_failed", @"iPhone pasteboard reports image content, but DualCopy could not extract or encode an image payload.", @{
+                        @"maxImageBytes": @(configuredLimit)
+                    });
+                });
             }
+        } else if (pasteboardChanged && current.hasImages) {
+            dispatch_async(gNetworkQueue, ^{
+                DualCopySendWindowsDiagnostic(@"warn", @"clipboard.image_sync_disabled", @"iPhone pasteboard reports image content, but image syncing is disabled in iPhone settings.", nil);
+            });
         }
 
         NSString *text = current.string;

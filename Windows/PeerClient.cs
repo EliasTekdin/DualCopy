@@ -227,6 +227,11 @@ internal sealed class PeerClient : IDisposable
                 }
                 return;
             }
+            if (type == "diagnostic")
+            {
+                LogRemoteDiagnostic(root);
+                return;
+            }
             if (type == "clipboard")
             {
                 ClipboardEntry? entry = root.Deserialize<ClipboardEntry>(JsonOptions);
@@ -248,6 +253,63 @@ internal sealed class PeerClient : IDisposable
             StatusChanged?.Invoke("Received an invalid clipboard message");
             DualCopyLog.Warn("Could not parse a peer JSON message.", error);
         }
+    }
+
+    private static void LogRemoteDiagnostic(JsonElement root)
+    {
+        string device = ReadDiagnosticText(root, "device", 20);
+        if (!string.Equals(device, "iphone", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(device, "ios", StringComparison.OrdinalIgnoreCase))
+        {
+            DualCopyLog.Warn("Ignored a peer diagnostic with an unrecognised source device.");
+            return;
+        }
+
+        string eventName = ReadDiagnosticText(root, "event", 80);
+        if (eventName.Length == 0 || !IsSafeDiagnosticEvent(eventName)) eventName = "unknown";
+        string message = ReadDiagnosticText(root, "message", 400);
+        string details = $"iPhone diagnostic [{eventName}]: {message}";
+        if (TryReadNonNegativeInteger(root, "imageBytes", out long imageBytes))
+            details += $" imageBytes={imageBytes}";
+        if (TryReadNonNegativeInteger(root, "maxImageBytes", out long maxImageBytes))
+            details += $" maxImageBytes={maxImageBytes}";
+        if (TryReadNonNegativeInteger(root, "base64Chars", out long base64Chars))
+            details += $" base64Chars={base64Chars}";
+
+        string level = ReadDiagnosticText(root, "level", 12);
+        if (string.Equals(level, "error", StringComparison.OrdinalIgnoreCase))
+            DualCopyLog.Error(details);
+        else if (string.Equals(level, "warn", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(level, "warning", StringComparison.OrdinalIgnoreCase))
+            DualCopyLog.Warn(details);
+        else
+            DualCopyLog.Info(details);
+    }
+
+    private static string ReadDiagnosticText(JsonElement root, string property, int maximumLength)
+    {
+        if (!root.TryGetProperty(property, out JsonElement value) || value.ValueKind != JsonValueKind.String)
+            return string.Empty;
+        string text = (value.GetString() ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return text.Length > maximumLength ? text[..maximumLength] : text;
+    }
+
+    private static bool IsSafeDiagnosticEvent(string value)
+    {
+        foreach (char character in value)
+        {
+            if (!char.IsAsciiLetterOrDigit(character) && character is not '.' and not '_' and not '-')
+                return false;
+        }
+        return true;
+    }
+
+    private static bool TryReadNonNegativeInteger(JsonElement root, string property, out long number)
+    {
+        number = 0;
+        return root.TryGetProperty(property, out JsonElement value) &&
+               value.ValueKind == JsonValueKind.Number &&
+               value.TryGetInt64(out number) && number >= 0;
     }
 
     private async Task SendAsync(object message)

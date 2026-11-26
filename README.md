@@ -5,7 +5,7 @@ DualCopy shares text, images, raw camera data, and ordinary files between a jail
 - **iPhone:** a SpringBoard tweak listens on TCP port `49732` by default, can initiate a connection to the configured Windows endpoint, keeps a configurable history, and applies text, images, and data-backed files received from Windows to the general pasteboard.
 - **Windows:** a .NET 8 WinForms tray application listens for the iPhone and also maintains an outgoing connection to the configured iPhone address. It can transfer text, images, DNG/PDF/TXT/ZIP/DEB and other file types, saves received files in a configurable folder, and includes a history viewer and local troubleshooting log.
 - **Settings:** the iPhone adds a `DualCopy` pane under Settings → Tweaks with connection, performance, history, file, and image conversion controls. The Windows Configure dialog has matching transfer limits, polling, history, receive-folder, format, quality, and dark-mode options.
-- **Protocol:** UTF-8 JSON Lines. The first message is `hello` with a history array; subsequent messages are `clipboard` entries. Entries use `kind` values `text`, `image`, or `file`; binary data is base64 encoded. Older clients can still exchange text and image entries.
+- **Protocol:** UTF-8 JSON Lines. The first message is `hello` with a history array; subsequent messages are `clipboard` entries. Entries use `kind` values `text`, `image`, or `file`; binary data is base64 encoded. iPhone-originated diagnostic messages report transfer stages and image filtering failures to the Windows companion without sending clipboard contents. Older clients can still exchange text and image entries.
 
 ## Image and file compatibility
 
@@ -41,7 +41,7 @@ To publish a self-contained x64 executable on Windows 11:
 powershell -ExecutionPolicy Bypass -File Windows\\Publish.ps1
 ```
 
-**Windows diagnostics:** the companion writes a rotating log to `%LOCALAPPDATA%\\DualCopy\\Logs\\DualCopy.log` and retains one previous log as `DualCopy.log.1`. Open the folder with **Open log folder** in the tray menu. Other tray actions remain **Configure**, **Clipboard history**, **About DualCopy**, and **Exit**. The log includes connection/listener status, clipboard item kinds and sizes, filtering decisions, and errors; clipboard payload contents are not logged.
+**Windows diagnostics:** the companion writes a rotating log to `%LOCALAPPDATA%\\DualCopy\\Logs\\DualCopy.log` and retains one previous log as `DualCopy.log.1`. Open the folder with **Open log folder** in the tray menu. The log includes connection/listener status, clipboard item kinds and sizes, filtering decisions, errors, phone-originated image detection/extraction/send-attempt events, and iPhone acknowledgements or rejection reasons for images Windows sent. Windows receipt and clipboard-apply outcomes are logged separately. iPhone diagnostics travel only over an active peer connection; they are not written to a log file on the phone and cannot reach Windows during a disconnection. Clipboard payload contents are not logged.
 
 
 ## iPhone build and install
