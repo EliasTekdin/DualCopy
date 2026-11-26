@@ -522,7 +522,7 @@ static NSDictionary *DualCopyPasteboardFile(UIPasteboard *pasteboard) {
     for (NSDictionary *item in pasteboard.items) {
         BOOL hasEncodedImage = NO;
         for (NSString *uti in item) {
-            if ([uti isEqualToString:@"public.png"] || [uti isEqualToString:@"public.jpeg"] ||
+            if ([uti isEqualToString:@"public.image"] || [uti isEqualToString:@"public.png"] || [uti isEqualToString:@"public.jpeg"] ||
                 [uti isEqualToString:@"public.jpg"] || [uti isEqualToString:@"public.tiff"] ||
                 [uti isEqualToString:@"public.heic"] || [uti isEqualToString:@"public.heif"] ||
                 [uti isEqualToString:@"public.gif"]) {
@@ -550,7 +550,7 @@ static NSDictionary *DualCopyPasteboardFile(UIPasteboard *pasteboard) {
 }
 
 static BOOL DualCopyIsImageUTI(NSString *uti) {
-    return [uti isEqualToString:@"public.png"] || [uti isEqualToString:@"public.jpeg"] ||
+    return [uti isEqualToString:@"public.image"] || [uti isEqualToString:@"public.png"] || [uti isEqualToString:@"public.jpeg"] ||
            [uti isEqualToString:@"public.jpg"] || [uti isEqualToString:@"public.tiff"] ||
            [uti isEqualToString:@"public.heic"] || [uti isEqualToString:@"public.heif"] ||
            [uti isEqualToString:@"public.gif"];
@@ -561,8 +561,21 @@ static NSData *DualCopyPasteboardImageData(UIPasteboard *pasteboard) {
         for (NSString *uti in item) {
             if (![uti isKindOfClass:[NSString class]] || !DualCopyIsImageUTI(uti)) continue;
             id value = item[uti];
-            if ([value isKindOfClass:[NSData class]]) return value;
+            if ([value isKindOfClass:[NSData class]]) {
+                NSData *data = value;
+                if (data.length > 0) return data;
+            } else if ([value isKindOfClass:[UIImage class]]) {
+                NSData *data = DualCopyEncodedImage(value);
+                if (data.length > 0) return data;
+            }
         }
+    }
+
+    // Some apps expose the pasteboard image through UIKit's typed accessor rather
+    // than a byte-data value for a public.* image representation.
+    if (pasteboard.hasImages) {
+        NSData *data = DualCopyEncodedImage(pasteboard.image);
+        if (data.length > 0) return data;
     }
     return nil;
 }
@@ -652,6 +665,7 @@ static void DualCopyStartClipboardPolling(void) {
         if (!gEnabled) return;
         UIPasteboard *current = UIPasteboard.generalPasteboard;
         NSInteger changeCount = current.changeCount;
+        BOOL pasteboardChanged = changeCount != gLastPasteboardChangeCount;
         gLastPasteboardChangeCount = changeCount;
 
         NSDictionary *file = gSyncFiles ? DualCopyPasteboardFile(current) : nil;
@@ -667,6 +681,9 @@ static void DualCopyStartClipboardPolling(void) {
                     DualCopyRecordLocalImage(data);
                 }
                 return;
+            }
+            if (pasteboardChanged && current.hasImages) {
+                os_log_error(DualCopyLog(), "Pasteboard reported image content, but DualCopy could not extract or encode it within the configured image limit (%lu bytes)", (unsigned long)gMaxImageBytes);
             }
         }
 

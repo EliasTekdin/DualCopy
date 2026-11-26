@@ -52,7 +52,7 @@ After installation, open Settings → Tweaks → DualCopy, set the Windows compu
 
 ## Repository status
 
-The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.7` fixes the iPhone text polling path when image sync is enabled and adds Windows-only troubleshooting logs.
+The permanent package identifier is `com.eliastekdin.dualcopy`. Version `0.3.8` improves iPhone image-pasteboard extraction across generic UIKit image representations.
 
 ## License
 
