@@ -5,7 +5,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <os/log.h>
 #import <sys/socket.h>
-#import <netinet/in.h>
+#import <netinet/tcp.h>
 #import <arpa/inet.h>
 #import <unistd.h>
 #import <errno.h>
@@ -233,6 +233,22 @@ static NSData *DualCopyJSONLine(NSDictionary *object) {
 static void DualCopyPrepareSocket(int fd) {
     int noSignal = 1;
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal));
+
+    int enabled = 1;
+    int idleSeconds = 30;
+    int intervalSeconds = 10;
+    int probeCount = 3;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, sizeof(enabled)) != 0) {
+        os_log_error(DualCopyLog(), "Could not enable TCP keepalive on a peer socket (errno=%d)", errno);
+        return;
+    }
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idleSeconds, sizeof(idleSeconds)) != 0 ||
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intervalSeconds, sizeof(intervalSeconds)) != 0 ||
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &probeCount, sizeof(probeCount)) != 0) {
+        os_log_error(DualCopyLog(), "Could not tune TCP keepalive on a peer socket (errno=%d)", errno);
+        return;
+    }
+    os_log(DualCopyLog(), "TCP keepalive enabled for peer socket (idle=%d s interval=%d s probes=%d)", idleSeconds, intervalSeconds, probeCount);
 }
 
 static void DualCopySendObjectToPeer(NSDictionary *object, int clientFD) {

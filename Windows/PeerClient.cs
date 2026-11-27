@@ -104,6 +104,7 @@ internal sealed class PeerClient : IDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 TcpClient client = await server.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                ConfigureTcpKeepAlive(client);
                 DualCopyLog.Info($"Accepted incoming TCP peer from {client.Client.RemoteEndPoint}.");
                 _ = HandleConnectionAsync(client, cancellationToken);
             }
@@ -136,6 +137,7 @@ internal sealed class PeerClient : IDisposable
             {
                 using TcpClient client = new();
                 await client.ConnectAsync(address, port, cancellationToken).ConfigureAwait(false);
+                ConfigureTcpKeepAlive(client);
                 lastConnectFailure = null;
                 DualCopyLog.Info($"Connected from Windows to iPhone at {address}:{port}.");
                 await HandleConnectionAsync(client, cancellationToken).ConfigureAwait(false);
@@ -157,6 +159,25 @@ internal sealed class PeerClient : IDisposable
 
             try { await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
+        }
+    }
+
+    private static void ConfigureTcpKeepAlive(TcpClient client)
+    {
+        try
+        {
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            byte[] keepAliveValues = new byte[12];
+            BitConverter.GetBytes((uint)1).CopyTo(keepAliveValues, 0);
+            BitConverter.GetBytes((uint)30_000).CopyTo(keepAliveValues, 4);
+            BitConverter.GetBytes((uint)10_000).CopyTo(keepAliveValues, 8);
+            client.Client.IOControl(IOControlCode.KeepAliveValues, keepAliveValues, null);
+            DualCopyLog.Info("TCP keepalive enabled for peer socket (idle=30 s interval=10 s).");
+        }
+        catch (Exception error)
+        {
+            // Keepalive tuning is best-effort; a platform refusal must not stop clipboard networking.
+            DualCopyLog.Warn("Could not configure TCP keepalive for a peer socket.", error);
         }
     }
 
@@ -327,7 +348,8 @@ internal sealed class PeerClient : IDisposable
         {
             try
             {
-                await SendToWriterAsync(writer, message, CancellationToken.None).ConfigureAwait(false);
+                using CancellationTokenSource writeTimeout = new(TimeSpan.FromSeconds(15));
+                await SendToWriterAsync(writer, message, writeTimeout.Token).ConfigureAwait(false);
                 sent++;
             }
             catch (Exception error)
