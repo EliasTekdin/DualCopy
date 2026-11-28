@@ -20,7 +20,7 @@ internal sealed record DualCopySettings(
     bool ConvertRawImages = true)
 {
     public static DualCopySettings Defaults => new(
-        "192.168.1.1",
+        "",
         49732,
         400,
         50,
@@ -40,7 +40,7 @@ internal sealed record DualCopySettings(
         if (format is not ("auto" or "png" or "jpeg")) format = "auto";
         return this with
         {
-            Address = string.IsNullOrWhiteSpace(Address) ? defaults.Address : Address.Trim(),
+            Address = Address?.Trim() ?? "",
             Port = Port is > 0 and <= 65535 ? Port : defaults.Port,
             PollingInterval = Math.Clamp(PollingInterval, 100, 5000),
             HistoryLimit = Math.Clamp(HistoryLimit, 10, 1000),

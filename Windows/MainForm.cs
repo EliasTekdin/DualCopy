@@ -46,8 +46,16 @@ internal sealed class MainForm : Form
     private string? lastImageFingerprint;
     private string? lastFileFingerprint;
     private bool applyingRemote;
+    private bool exiting;
     private DateTime lastClipboardBusyLogUtc;
     private string lastStatus = "Starting…";
+    private readonly Label connectionSummary = new();
+    private readonly Label setupSummary = new();
+    private readonly ListView historyList = new();
+    private readonly TextBox logView = new();
+    private readonly System.Windows.Forms.Timer logRefreshTimer;
+    private ConnectionCheckForm? connectionCheck;
+    private ConfigureForm? settingsEditor;
 
     public MainForm()
     {
@@ -57,42 +65,236 @@ internal sealed class MainForm : Form
         uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         peer = new PeerClient(history, settings.Address, settings.Port);
 
+        Text = "DualCopy";
+        StartPosition = FormStartPosition.CenterScreen;
+        MinimumSize = new Size(760, 520);
+        Size = new Size(900, 650);
+        ShowInTaskbar = true;
+        BuildMainInterface();
+
         trayIcon = new NotifyIcon
         {
             Icon = SystemIcons.Application,
             Visible = true,
-            Text = "DualCopy: connecting"
+            Text = "DualCopy: starting"
         };
-        peer.StatusChanged += status => uiContext.Post(_ =>
-        {
-            lastStatus = status;
-            trayIcon.Text = "DualCopy: " + TrimStatus(status);
-        }, null);
-        peer.RemoteClipboardReceived += entry => uiContext.Post(_ => ApplyRemoteClipboard(entry), null);
+        peer.StatusChanged += status => uiContext.Post(_ => UpdateConnectionStatus(status), null);
+        peer.RemoteClipboardReceived += entry => uiContext.Post(_ => { ApplyRemoteClipboard(entry); RefreshHistoryPage(); }, null);
 
         ContextMenuStrip menu = new();
-        menu.Items.Add("Configure", null, (_, _) => ShowConfigure());
-        menu.Items.Add("Open log folder", null, (_, _) => DualCopyLog.OpenFolder());
-        menu.Items.Add("Clipboard history", null, (_, _) => ShowHistory());
-        menu.Items.Add("About DualCopy", null, (_, _) => ShowAbout());
+        menu.Items.Add("Open DualCopy", null, (_, _) => ShowMainWindow());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => Close());
+        menu.Items.Add("Exit", null, (_, _) => { exiting = true; Close(); });
         trayIcon.ContextMenuStrip = menu;
-        trayIcon.DoubleClick += (_, _) => ShowConfigure();
+        trayIcon.DoubleClick += (_, _) => ShowMainWindow();
 
-        ShowInTaskbar = false;
-        FormBorderStyle = FormBorderStyle.FixedToolWindow;
-        WindowState = FormWindowState.Minimized;
-        Opacity = 0;
-        Width = 1;
-        Height = 1;
-        Load += (_, _) => Hide();
-        FormClosed += (_, _) => { trayIcon.Visible = false; trayIcon.Dispose(); peer.Dispose(); };
+        FormClosing += (_, args) =>
+        {
+            if (!exiting && args.CloseReason == CloseReason.UserClosing && trayIcon.Visible)
+            {
+                args.Cancel = true;
+                Hide();
+                trayIcon.BalloonTipTitle = "DualCopy is still running";
+                trayIcon.BalloonTipText = "Open DualCopy from the notification area to view connection status.";
+                trayIcon.ShowBalloonTip(2500);
+            }
+        };
+        FormClosed += (_, _) => { trayIcon.Visible = false; trayIcon.Dispose(); peer.Dispose(); logRefreshTimer.Stop(); };
+        Shown += (_, _) =>
+        {
+            RefreshHistoryPage();
+            RefreshLogPage();
+            ShowConnectionCheck();
+        };
 
         clipboardTimer = new System.Windows.Forms.Timer { Interval = settings.PollingInterval };
         clipboardTimer.Tick += (_, _) => PollClipboard();
         clipboardTimer.Start();
+        logRefreshTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+        logRefreshTimer.Tick += (_, _) => RefreshLogPage();
+        logRefreshTimer.Start();
         peer.Start();
+    }
+
+    private void BuildMainInterface()
+    {
+        TabControl tabs = new() { Dock = DockStyle.Fill, Name = "mainTabs" };
+        tabs.TabPages.Add(BuildConnectionTab());
+        tabs.TabPages.Add(BuildHistoryTab());
+        tabs.TabPages.Add(BuildSettingsTab());
+        tabs.TabPages.Add(BuildLogsTab());
+        tabs.TabPages.Add(BuildAboutTab());
+        Controls.Add(tabs);
+        Tag = tabs;
+        DualCopyAppearance.Apply(this, settings.DarkMode);
+    }
+
+    private TabPage BuildConnectionTab()
+    {
+        TabPage page = new("Connection");
+        Label heading = new() { Text = "Device connection", Font = new Font(Font, FontStyle.Bold), AutoSize = true, Left = 24, Top = 26 };
+        connectionSummary.SetBounds(24, 68, 800, 54);
+        connectionSummary.AutoEllipsis = true;
+        connectionSummary.Font = new Font(Font.FontFamily, 12, FontStyle.Regular);
+        setupSummary.SetBounds(24, 130, 800, 110);
+        setupSummary.AutoSize = false;
+        setupSummary.Text = "Startup checks: Windows listener, saved iPhone address, and peer handshake. A successful TCP connection still depends on both apps being enabled and reachable on the same LAN or routed VPN.";
+        Button configure = new() { Text = "Connection and transfer settings…", Left = 24, Top = 260, Width = 250, Height = 36 };
+        configure.Click += (_, _) => SelectTab("Settings");
+        Button check = new() { Text = "Run connection check", Left = 288, Top = 260, Width = 180, Height = 36 };
+        check.Click += (_, _) => ShowConnectionCheck();
+        page.Controls.AddRange(new Control[] { heading, connectionSummary, setupSummary, configure, check });
+        return page;
+    }
+
+    private void ShowConnectionCheck()
+    {
+        if (connectionCheck is not null && !connectionCheck.IsDisposed) connectionCheck.Close();
+        connectionCheck = new ConnectionCheckForm(settings.Address, settings.Port);
+        connectionCheck.SettingsRequested += (_, _) => SelectTab("Settings");
+        connectionCheck.UpdateStatus(lastStatus, settings.Address, settings.Port);
+        connectionCheck.Show(this);
+    }
+
+    private TabPage BuildHistoryTab()
+    {
+        TabPage page = new("History");
+        historyList.SetBounds(12, 12, 840, 500);
+        historyList.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        historyList.View = View.Details; historyList.FullRowSelect = true;
+        historyList.Columns.Add("Type", 90); historyList.Columns.Add("Name / preview", 560); historyList.Columns.Add("Time", 160);
+        Button copy = new() { Text = "Copy selected", Left = 12, Top = 522, Width = 120, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        copy.Click += (_, _) => CopySelectedHistory();
+        Button clear = new() { Text = "Clear history", Left = 142, Top = 522, Width = 120, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        clear.Click += (_, _) => { history.Clear(); RefreshHistoryPage(); };
+        page.Controls.AddRange(new Control[] { historyList, copy, clear });
+        return page;
+    }
+
+    private TabPage BuildSettingsTab()
+    {
+        TabPage page = new("Settings");
+        settingsEditor = CreateSettingsEditor(settings);
+        page.Controls.Add(settingsEditor);
+        settingsEditor.Show();
+        return page;
+    }
+
+    private ConfigureForm CreateSettingsEditor(DualCopySettings value)
+    {
+        ConfigureForm editor = new(value, lastStatus, embedded: true)
+        {
+            TopLevel = false,
+            FormBorderStyle = FormBorderStyle.None,
+            Dock = DockStyle.Fill
+        };
+        editor.SettingsAccepted += (_, _) => ApplySettings(editor.SettingsValue);
+        editor.SettingsCancelled += (_, _) => BeginInvoke(new Action(RebuildSettingsEditor));
+        return editor;
+    }
+
+    private void RebuildSettingsEditor()
+    {
+        if (settingsEditor is null || settingsEditor.Parent is not TabPage page) return;
+        page.Controls.Remove(settingsEditor);
+        settingsEditor.Dispose();
+        settingsEditor = CreateSettingsEditor(settings);
+        page.Controls.Add(settingsEditor);
+        settingsEditor.Show();
+    }
+
+    private TabPage BuildLogsTab()
+    {
+        TabPage page = new("Logs");
+        logView.SetBounds(12, 12, 840, 470); logView.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        logView.Multiline = true; logView.ReadOnly = true; logView.ScrollBars = ScrollBars.Both; logView.WordWrap = false;
+        Button refresh = new() { Text = "Refresh", Left = 12, Top = 492, Width = 90, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        refresh.Click += (_, _) => RefreshLogPage();
+        Button folder = new() { Text = "Open log folder", Left = 112, Top = 492, Width = 130, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        folder.Click += (_, _) => DualCopyLog.OpenFolder();
+        page.Controls.AddRange(new Control[] { logView, refresh, folder });
+        return page;
+    }
+
+    private TabPage BuildAboutTab()
+    {
+        TabPage page = new("About");
+        page.Controls.Add(new Label { Text = "DualCopy 0.3.12\\r\\n\\r\\nShare text, images, and files between iPhone and Windows.\\r\\n\\r\\nGitHub: github.com/EliasTekdin/DualCopy", Left = 24, Top = 24, Width = 700, Height = 160 });
+        return page;
+    }
+
+    private void UpdateConnectionStatus(string status)
+    {
+        lastStatus = status;
+        trayIcon.Text = "DualCopy: " + TrimStatus(status);
+        connectionSummary.Text = "Current status: " + status;
+        setupSummary.Text = BuildSetupGuidance(status, settings.Address, settings.Port);
+        connectionCheck?.UpdateStatus(status, settings.Address, settings.Port);
+    }
+
+    private static string BuildSetupGuidance(string status, string address, int port)
+    {
+        if (string.IsNullOrWhiteSpace(address)) return "Action needed: enter the iPhone's current LAN/VPN IP address and matching listening port in Settings.";
+        if (status.StartsWith("Connected", StringComparison.OrdinalIgnoreCase) || status.Contains("Connected to DualCopy", StringComparison.OrdinalIgnoreCase))
+            return $"Peer socket is connected to {address}:{port}. Keep both devices enabled and reachable; clipboard exchange starts after the JSONL hello/history handshake.";
+        if (status.StartsWith("Listen failed", StringComparison.OrdinalIgnoreCase)) return "Windows could not open its listening port. Check whether another app already uses this port and allow DualCopy through Windows Firewall.";
+        if (status.StartsWith("Outgoing connection", StringComparison.OrdinalIgnoreCase) || status.StartsWith("Peer disconnected", StringComparison.OrdinalIgnoreCase))
+            return $"Not connected to {address}:{port}. Confirm the iPhone is unlocked recently/has DualCopy enabled, Wi-Fi is active, the address has not changed, and firewall/router rules allow TCP {port}. DualCopy retries automatically.";
+        return $"Windows listens on TCP {port} and retries the iPhone endpoint {address}:{port}. Use the same reachable LAN/VPN network; mobile data alone cannot reach a private home address.";
+    }
+
+    private void RefreshHistoryPage()
+    {
+        if (historyList.IsDisposed) return;
+        historyList.BeginUpdate(); historyList.Items.Clear();
+        foreach (ClipboardEntry entry in history.Snapshot())
+        {
+            string value = entry.Kind == "text" ? entry.Text ?? "" : entry.Name ?? entry.Kind;
+            if (value.Length > 100) value = value[..100];
+            historyList.Items.Add(new ListViewItem(new[] { entry.Kind, value, DateTimeOffset.FromUnixTimeMilliseconds(entry.Timestamp).ToLocalTime().ToString("g") }) { Tag = entry });
+        }
+        historyList.EndUpdate();
+    }
+
+    private void CopySelectedHistory()
+    {
+        if (historyList.SelectedItems.Count == 0 || historyList.SelectedItems[0].Tag is not ClipboardEntry entry) return;
+        try
+        {
+            if (entry.Kind == "text" && entry.Text is not null) Clipboard.SetText(entry.Text);
+            else if (entry.Kind == "image" && entry.Data is not null)
+            {
+                using MemoryStream stream = new(Convert.FromBase64String(entry.Data)); using Image source = Image.FromStream(stream); using Bitmap bitmap = new(source); Clipboard.SetImage(bitmap);
+            }
+            else if (entry.Kind == "file" && entry.Data is not null)
+            {
+                Directory.CreateDirectory(settings.ReceiveFolder); string path = Path.Combine(settings.ReceiveFolder, Path.GetFileName(entry.Name ?? "DualCopy-file.bin")); File.WriteAllBytes(path, Convert.FromBase64String(entry.Data)); Clipboard.SetFileDropList(new StringCollection { path });
+            }
+        }
+        catch (Exception error) { DualCopyLog.Error("Could not copy a history entry to the Windows clipboard.", error); }
+    }
+
+    private void RefreshLogPage()
+    {
+        if (logView.IsDisposed || !Visible) return;
+        try
+        {
+            string path = Path.Combine(DualCopyLog.FolderPath, "DualCopy.log");
+            string contents = File.Exists(path) ? File.ReadAllText(path) : "Log file will appear after the first diagnostic event.";
+            if (logView.Text != contents) { logView.Text = contents; logView.SelectionStart = logView.TextLength; logView.ScrollToCaret(); }
+        }
+        catch (Exception error) { logView.Text = "Could not read the log file: " + error.Message; }
+    }
+
+    private void SelectTab(string name)
+    {
+        if (Tag is TabControl tabs)
+            foreach (TabPage tab in tabs.TabPages) if (tab.Text == name) { tabs.SelectedTab = tab; break; }
+    }
+
+    private void ShowMainWindow()
+    {
+        Show(); WindowState = FormWindowState.Normal; Activate();
     }
 
     private void PollClipboard()
@@ -271,13 +473,18 @@ internal sealed class MainForm : Form
     private void ShowConfigure()
     {
         using ConfigureForm dialog = new(settings, lastStatus);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        settings = dialog.SettingsValue.Normalized();
+        if (dialog.ShowDialog(this) == DialogResult.OK) ApplySettings(dialog.SettingsValue);
+    }
+
+    private void ApplySettings(DualCopySettings updated)
+    {
+        settings = updated.Normalized();
         settings.Save(SettingsPath());
         history.Limit = settings.HistoryLimit;
         clipboardTimer.Interval = settings.PollingInterval;
         peer.Configure(settings.Address, settings.Port);
         DualCopyLog.Info($"Settings saved: target={settings.Address}:{settings.Port}, pollingMs={settings.PollingInterval}, syncImages={settings.SyncImages}, syncFiles={settings.SyncFiles}.");
+        UpdateConnectionStatus(lastStatus);
         peer.Start();
     }
 
@@ -407,6 +614,53 @@ internal sealed class MainForm : Form
     private sealed record FilePayload(string Name, byte[] Data, string Mime);
 }
 
+internal sealed class ConnectionCheckForm : Form
+{
+    private readonly Label status = new();
+    private readonly Label guidance = new();
+    private readonly string address;
+    private readonly int port;
+    public event EventHandler? SettingsRequested;
+
+    public ConnectionCheckForm(string address, int port)
+    {
+        this.address = address;
+        this.port = port;
+        Text = "DualCopy connection check";
+        StartPosition = FormStartPosition.CenterParent;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ShowInTaskbar = false;
+        ClientSize = new Size(480, 190);
+        Label title = new() { Text = "Checking DualCopy connection", Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold), Left = 18, Top = 16, Width = 430, Height = 28 };
+        status.SetBounds(18, 52, 440, 28);
+        guidance.SetBounds(18, 82, 440, 54);
+        guidance.AutoEllipsis = true;
+        Button settings = new() { Text = "Review setup", Left = 18, Top = 145, Width = 110, Height = 30 };
+        settings.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
+        Button close = new() { Text = "Close", Left = 368, Top = 145, Width = 90, Height = 30 };
+        close.Click += (_, _) => Close();
+        Controls.AddRange(new Control[] { title, status, guidance, settings, close });
+        UpdateStatus("Starting connection services", address, port);
+    }
+
+    public void UpdateStatus(string currentStatus, string targetAddress, int targetPort)
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(new Action(() => UpdateStatus(currentStatus, targetAddress, targetPort))); return; }
+        status.Text = "Stage: " + currentStatus;
+        if (string.IsNullOrWhiteSpace(targetAddress))
+            guidance.Text = "Setup needed: enter the iPhone's current IP address and matching port. The two devices need a shared LAN or routed VPN path.";
+        else if (currentStatus.Contains("Connected", StringComparison.OrdinalIgnoreCase))
+            guidance.Text = $"Peer reached at {targetAddress}:{targetPort}. If clipboard sync does not start, check both devices' Sync enabled settings and inspect the Logs tab.";
+        else if (currentStatus.StartsWith("Listen failed", StringComparison.OrdinalIgnoreCase))
+            guidance.Text = $"Windows could not listen on port {targetPort}; another process or firewall policy may be blocking it. Open Settings to review the port.";
+        else
+            guidance.Text = $"Trying to reach {targetAddress}:{targetPort}. Check the iPhone is powered on with DualCopy enabled, on Wi-Fi, and still using this address. Retries continue automatically.";
+    }
+}
+
 internal sealed class ConfigureForm : Form
 {
     private readonly TextBox addressBox = new();
@@ -425,6 +679,8 @@ internal sealed class ConfigureForm : Form
     private readonly Label statusLabel = new();
     private readonly ToolTip optionsToolTip = new();
     private readonly DualCopySettings initial;
+    public event EventHandler? SettingsAccepted;
+    public event EventHandler? SettingsCancelled;
 
     public DualCopySettings SettingsValue => initial with
     {
@@ -443,12 +699,12 @@ internal sealed class ConfigureForm : Form
         DarkMode = darkBox.Checked
     };
 
-    public ConfigureForm(DualCopySettings settings, string status)
+    public ConfigureForm(DualCopySettings settings, string status, bool embedded = false)
     {
         initial = settings;
         Text = "DualCopy settings";
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        FormBorderStyle = embedded ? FormBorderStyle.None : FormBorderStyle.FixedDialog;
         MinimizeBox = false;
         MaximizeBox = false;
         ClientSize = new Size(590, 500);
@@ -472,6 +728,8 @@ internal sealed class ConfigureForm : Form
         statusLabel.SetBounds(16, 414, 544, 48); statusLabel.AutoEllipsis = true; statusLabel.Text = "Last connection status: " + status + "  •  Reconnects automatically; the iPhone pauses outbound attempts when Wi-Fi is unavailable."; Controls.Add(statusLabel);
         Button save = new() { Text = "Save", DialogResult = DialogResult.OK, Left = 400, Top = 462, Width = 75 };
         Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 485, Top = 462, Width = 75 };
+        save.Click += (_, _) => SettingsAccepted?.Invoke(this, EventArgs.Empty);
+        cancel.Click += (_, _) => SettingsCancelled?.Invoke(this, EventArgs.Empty);
         Controls.Add(save); Controls.Add(cancel); AcceptButton = save; CancelButton = cancel;
         darkBox.CheckedChanged += (_, _) => DualCopyAppearance.Apply(this, darkBox.Checked);
         DualCopyAppearance.Apply(this, settings.DarkMode);
@@ -538,7 +796,7 @@ internal sealed class AboutForm : Form
     public AboutForm()
     {
         Text = "About DualCopy"; StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(390, 210); Padding = new Padding(18);
-        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.11\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
+        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.12\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
         Controls.Add(text); Button close = new() { Text = "Close", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 30 }; Controls.Add(close);
     }
 }

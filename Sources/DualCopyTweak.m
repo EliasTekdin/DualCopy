@@ -67,6 +67,19 @@ static id DualCopyPreference(NSString *key) {
     return CFBridgingRelease(value);
 }
 
+static void DualCopyPublishConnectionStatus(NSString *status, NSString *detail) {
+    id oldStatusValue = DualCopyPreference(@"connectionStatus");
+    id oldDetailValue = DualCopyPreference(@"connectionDetail");
+    NSString *oldStatus = [oldStatusValue isKindOfClass:[NSString class]] ? oldStatusValue : nil;
+    NSString *oldDetail = [oldDetailValue isKindOfClass:[NSString class]] ? oldDetailValue : nil;
+    if ([oldStatus isEqualToString:status] && [oldDetail isEqualToString:detail]) return;
+    CFPreferencesSetAppValue(CFSTR("connectionStatus"), (__bridge CFPropertyListRef)status, CFSTR(APELIN_PACKAGE_ID));
+    CFPreferencesSetAppValue(CFSTR("connectionDetail"), (__bridge CFPropertyListRef)detail, CFSTR(APELIN_PACKAGE_ID));
+    CFPreferencesSetAppValue(CFSTR("connectionUpdated"), (__bridge CFPropertyListRef)NSDate.date.description, CFSTR(APELIN_PACKAGE_ID));
+    CFPreferencesAppSynchronize(CFSTR(APELIN_PACKAGE_ID));
+    notify_post("com.eliastekdin.dualcopy/status");
+}
+
 static NSUInteger DualCopyPositiveInteger(id value, NSUInteger fallback, NSUInteger minimum, NSUInteger maximum) {
     if (![value respondsToSelector:@selector(unsignedIntegerValue)]) return fallback;
     NSUInteger number = [value unsignedIntegerValue];
@@ -122,6 +135,11 @@ static void DualCopyReadSettings(void) {
            gComputerAddress.UTF8String ?: "", gComputerPort,
            (unsigned long)gPollIntervalMilliseconds, (unsigned long)gHistoryLimit,
            (unsigned long)gMaxImageBytes, (unsigned long)gMaxFileBytes);
+    if (!gEnabled) {
+        DualCopyPublishConnectionStatus(@"Disabled", @"DualCopy is disabled in iPhone settings.");
+    } else if (gComputerAddress.length == 0) {
+        DualCopyPublishConnectionStatus(@"Setup needed", @"Set the Windows computer IP address and matching port in Settings → Tweaks → DualCopy.");
+    }
 }
 
 static NSString *DualCopyHistoryPath(void) {
@@ -483,6 +501,7 @@ static void DualCopyReadClient(int clientFD) {
     NSUInteger peerCount = gPeerFDs.count;
     [gSocketLock unlock];
     os_log(DualCopyLog(), "Peer session opened: remote=%{public}s, activePeers=%lu; sending iPhone hello/history", peer.UTF8String ?: "unknown", (unsigned long)peerCount);
+    DualCopyPublishConnectionStatus(@"Connected", [NSString stringWithFormat:@"Connected peer from %@ (%lu active connection(s)); sending hello/history.", peer, (unsigned long)peerCount]);
     DualCopySendObjectToPeer(@{ @"type": @"hello", @"device": @"ios", @"history": [gHistory copy] }, clientFD);
     NSMutableData *pending = [NSMutableData data];
     uint8_t buffer[8192];
@@ -524,9 +543,14 @@ static void DualCopyReadClient(int clientFD) {
         }
     }
     DualCopyReleasePeer(clientFD);
+    [gSocketLock lock];
+    NSUInteger remainingPeers = gPeerFDs.count;
+    [gSocketLock unlock];
     os_log(DualCopyLog(), "Peer session ended: remote=%{public}s reason=%{public}s receivedBytes=%llu jsonMessages=%lu bufferedBytes=%lu",
            peer.UTF8String ?: "unknown", disconnectReason.UTF8String ?: "unknown", totalBytes,
            (unsigned long)messageCount, (unsigned long)pending.length);
+    DualCopyPublishConnectionStatus(remainingPeers > 0 ? @"Connected" : @"Disconnected",
+                                   remainingPeers > 0 ? [NSString stringWithFormat:@"A peer closed (%@); %lu other connection(s) remain active.", disconnectReason, (unsigned long)remainingPeers] : [NSString stringWithFormat:@"Peer disconnected (%@). Automatic reconnect will continue when the endpoint is reachable.", disconnectReason]);
 }
 
 static void DualCopyAcceptLoop(void) {
@@ -546,6 +570,7 @@ static void DualCopyAcceptLoop(void) {
     if (bind(gListenFD, (struct sockaddr *)&address, sizeof(address)) != 0) {
         int savedErrno = errno;
         os_log_error(DualCopyLog(), "Could not bind iPhone TCP listener on port %u (errno=%d: %{public}s)", gListenPort, savedErrno, strerror(savedErrno));
+        DualCopyPublishConnectionStatus(@"Listener failed", [NSString stringWithFormat:@"Could not bind port %u (errno %d: %s). Check whether the port is already in use.", gListenPort, savedErrno, strerror(savedErrno)]);
         close(gListenFD);
         gListenFD = -1;
         return;
@@ -553,11 +578,13 @@ static void DualCopyAcceptLoop(void) {
     if (listen(gListenFD, 8) != 0) {
         int savedErrno = errno;
         os_log_error(DualCopyLog(), "Could not listen on iPhone TCP port %u (errno=%d: %{public}s)", gListenPort, savedErrno, strerror(savedErrno));
+        DualCopyPublishConnectionStatus(@"Listener failed", [NSString stringWithFormat:@"Could not listen on TCP port %u (errno %d: %s).", gListenPort, savedErrno, strerror(savedErrno)]);
         close(gListenFD);
         gListenFD = -1;
         return;
     }
     os_log(DualCopyLog(), "DualCopy listening for Windows on TCP port %u", gListenPort);
+    DualCopyPublishConnectionStatus(@"Listening", [NSString stringWithFormat:@"Listening for Windows peers on TCP port %u; Windows endpoint is %@:%u.", gListenPort, gComputerAddress.length ? gComputerAddress : @"not configured", gComputerPort]);
     while (true) {
         int client = accept(gListenFD, NULL, NULL);
         if (client < 0) {
@@ -604,6 +631,8 @@ static void DualCopyConnectLoop(void) {
     BOOL loggedWaitingForWiFi = NO;
     while (true) {
         if (!gEnabled || gComputerAddress.length == 0) {
+            DualCopyPublishConnectionStatus(gEnabled ? @"Setup needed" : @"Disabled",
+                                           gEnabled ? @"Set the Windows computer IP address and matching port in Settings → Tweaks → DualCopy." : @"DualCopy is disabled in iPhone settings.");
             sleep(5);
             continue;
         }
@@ -611,6 +640,7 @@ static void DualCopyConnectLoop(void) {
         if (!wifiAvailable) {
             if (!loggedWaitingForWiFi) {
                 os_log(DualCopyLog(), "Wi-Fi interface is unavailable; pausing outbound Windows reconnects until Wi-Fi returns");
+                DualCopyPublishConnectionStatus(@"Waiting for Wi-Fi", @"No active Wi-Fi interface address was found. Outbound Windows retries are paused; cellular-only service cannot reach a private home LAN address.");
                 loggedWaitingForWiFi = YES;
             }
             sleep(10);
@@ -618,6 +648,7 @@ static void DualCopyConnectLoop(void) {
         }
         if (loggedWaitingForWiFi) {
             os_log(DualCopyLog(), "Wi-Fi interface is available; resuming reconnect attempts to the saved Windows endpoint");
+            DualCopyPublishConnectionStatus(@"Reconnecting", [NSString stringWithFormat:@"Wi-Fi is available again; retrying Windows at %@:%u.", gComputerAddress, gComputerPort]);
             loggedWaitingForWiFi = NO;
             retryDelaySeconds = 2;
         }
@@ -648,6 +679,7 @@ static void DualCopyConnectLoop(void) {
         if (host == NULL || inet_pton(AF_INET, host, &address.sin_addr) != 1) {
             os_log_error(DualCopyLog(), "Saved Windows endpoint is not a valid IPv4 address: %{public}s:%u; reconnect paused for %u s",
                          host ?: "(empty)", gComputerPort, retryDelaySeconds);
+            DualCopyPublishConnectionStatus(@"Invalid Windows address", [NSString stringWithFormat:@"%@ is not a valid IPv4 address. Enter the Windows PC's current LAN/VPN IPv4 address.", gComputerAddress]);
             close(client);
             sleep(retryDelaySeconds);
             retryDelaySeconds = MIN(retryDelaySeconds * 2, 60);
@@ -657,6 +689,7 @@ static void DualCopyConnectLoop(void) {
             int savedErrno = errno;
             os_log(DualCopyLog(), "Windows connection attempt to %{public}s:%u failed (errno=%d: %{public}s); retrying in %u s",
                    host, gComputerPort, savedErrno, strerror(savedErrno), retryDelaySeconds);
+            DualCopyPublishConnectionStatus(@"Reconnecting", [NSString stringWithFormat:@"Cannot reach Windows at %s:%u (%s); retrying in %u seconds. Verify address, firewall, Wi-Fi and that Windows DualCopy is running.", host, gComputerPort, strerror(savedErrno), retryDelaySeconds]);
             close(client);
             sleep(retryDelaySeconds);
             retryDelaySeconds = MIN(retryDelaySeconds * 2, 60);
@@ -664,6 +697,7 @@ static void DualCopyConnectLoop(void) {
         }
         retryDelaySeconds = 2;
         os_log(DualCopyLog(), "Connected to Windows at %{public}s:%u", host, gComputerPort);
+        DualCopyPublishConnectionStatus(@"Connected", [NSString stringWithFormat:@"TCP connection established with Windows at %s:%u; exchanging hello/history.", host, gComputerPort]);
         DualCopyReadClient(client);
         sleep(2);
     }

@@ -6,7 +6,39 @@
 @interface DualCopyPrefsRootListController : PSListController
 @end
 
+static NSString * const kDualCopyStatusNotification = @"com.eliastekdin.dualcopy/status";
+static int gStatusNotificationToken = 0;
+
+static NSString *DualCopyStatusValue(NSString *key) {
+    id value = CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.eliastekdin.dualcopy")));
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+}
+
 @implementation DualCopyPrefsRootListController
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (gStatusNotificationToken == 0) {
+        __weak typeof(self) weakSelf = self;
+        notify_register_dispatch(kDualCopyStatusNotification.UTF8String, &gStatusNotificationToken, dispatch_get_main_queue(), ^(int token) {
+            (void)token;
+            DualCopyPrefsRootListController *strongSelf = weakSelf;
+            if (strongSelf == nil) return;
+            strongSelf->_specifiers = nil;
+            [strongSelf reloadSpecifiers];
+        });
+    }
+    _specifiers = nil;
+    [self reloadSpecifiers];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    if (gStatusNotificationToken != 0) {
+        notify_cancel(gStatusNotificationToken);
+        gStatusNotificationToken = 0;
+    }
+}
 
 static NSString * const kDualCopyDomain = @"com.eliastekdin.dualcopy";
 static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcopy/changed";
@@ -96,6 +128,18 @@ static NSString * const kDualCopyChangedNotification = @"com.eliastekdin.dualcop
         [group setProperty:@"This iPhone listens on the local port below and connects to Windows using the Windows address and port. The same port, 49732, may be used on both devices."
                     forKey:@"footerText"];
         [specifiers addObject:group];
+
+        NSString *connectionStatus = DualCopyStatusValue(@"connectionStatus");
+        NSString *connectionDetail = DualCopyStatusValue(@"connectionDetail");
+        NSString *connectionUpdated = DualCopyStatusValue(@"connectionUpdated");
+        group = [PSSpecifier groupSpecifierWithName:@"Live connection status"];
+        NSString *statusFooter = [NSString stringWithFormat:@"%@\n%@%@",
+                                  connectionStatus.length ? connectionStatus : @"Waiting for SpringBoard status",
+                                  connectionDetail.length ? connectionDetail : @"Open Settings again after SpringBoard starts if status has not appeared.",
+                                  connectionUpdated.length ? [NSString stringWithFormat:@"\nUpdated: %@", connectionUpdated] : @""];
+        [group setProperty:statusFooter forKey:@"footerText"];
+        [specifiers addObject:group];
+
         [specifiers addObject:[self dualCopyValueSpecifier:@"Enabled"
                                                        key:@"enabled"
                                                   default:@YES

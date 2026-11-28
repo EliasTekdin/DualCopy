@@ -53,7 +53,15 @@ internal sealed class PeerClient : IDisposable
         connectionCancellation = new CancellationTokenSource();
         DualCopyLog.Info($"Starting Windows peer: listenPort={port}, target={address}:{port}, reason={(replacingSession ? "reconfigure/restart" : "initial startup")}.");
         _ = ListenAsync(connectionCancellation.Token);
-        _ = ConnectAsync(connectionCancellation.Token);
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            DualCopyLog.Warn("Outbound connection is not starting because the iPhone address is not configured.");
+            StatusChanged?.Invoke("Setup needed: enter the iPhone IP address");
+        }
+        else
+        {
+            _ = ConnectAsync(connectionCancellation.Token);
+        }
     }
 
     public async Task SendClipboardAsync(ClipboardEntry entry)
