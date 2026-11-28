@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,14 +21,13 @@ internal sealed class PeerClient : IDisposable
     };
 
     private readonly HistoryStore history;
-    private readonly SemaphoreSlim writerGate = new(1, 1);
+    private readonly ConditionalWeakTable<StreamWriter, SemaphoreSlim> writerGates = new();
     private readonly object writersLock = new();
     private readonly List<StreamWriter> writers = new();
     private CancellationTokenSource? connectionCancellation;
     private TcpListener? listener;
     private string address;
     private int port;
-    private string? lastConnectFailure;
 
     public event Action<ClipboardEntry>? RemoteClipboardReceived;
     public event Action<string>? StatusChanged;
@@ -45,10 +47,11 @@ internal sealed class PeerClient : IDisposable
 
     public void Start()
     {
+        bool replacingSession = connectionCancellation is not null;
         connectionCancellation?.Cancel();
         try { listener?.Stop(); } catch { }
         connectionCancellation = new CancellationTokenSource();
-        DualCopyLog.Info($"Starting Windows peer: listenPort={port}, target={address}:{port}.");
+        DualCopyLog.Info($"Starting Windows peer: listenPort={port}, target={address}:{port}, reason={(replacingSession ? "reconfigure/restart" : "initial startup")}.");
         _ = ListenAsync(connectionCancellation.Token);
         _ = ConnectAsync(connectionCancellation.Token);
     }
@@ -109,6 +112,7 @@ internal sealed class PeerClient : IDisposable
     private async Task ConnectAsync(CancellationToken cancellationToken)
     {
         TimeSpan retryDelay = TimeSpan.FromSeconds(2);
+        int consecutiveFailures = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             bool connected = false;
@@ -117,7 +121,7 @@ internal sealed class PeerClient : IDisposable
                 using TcpClient client = new();
                 await client.ConnectAsync(address, port, cancellationToken).ConfigureAwait(false);
                 ConfigureTcpKeepAlive(client);
-                lastConnectFailure = null;
+                consecutiveFailures = 0;
                 connected = true;
                 retryDelay = TimeSpan.FromSeconds(2);
                 DualCopyLog.Info($"Connected from Windows to iPhone at {address}:{port}.");
@@ -130,12 +134,8 @@ internal sealed class PeerClient : IDisposable
             catch (Exception error)
             {
                 StatusChanged?.Invoke($"Outgoing connection: {error.Message}");
-                string failure = $"{address}:{port}: {error.GetType().Name}: {error.Message}";
-                if (!string.Equals(lastConnectFailure, failure, StringComparison.Ordinal))
-                {
-                    lastConnectFailure = failure;
-                    DualCopyLog.Warn($"Windows outgoing connection to iPhone failed for {address}:{port}; retrying in {retryDelay.TotalSeconds:0} s.", error);
-                }
+                consecutiveFailures++;
+                DualCopyLog.Warn($"Windows outgoing connection attempt #{consecutiveFailures} to iPhone {address}:{port} failed; retrying in {retryDelay.TotalSeconds:0} s.", error);
             }
 
             TimeSpan delay = connected ? TimeSpan.FromSeconds(2) : retryDelay;
@@ -166,6 +166,7 @@ internal sealed class PeerClient : IDisposable
 
     private async Task HandleConnectionAsync(TcpClient client, CancellationToken cancellationToken)
     {
+        string remote = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
         using (client)
         using (NetworkStream stream = client.GetStream())
         using (StreamReader reader = new(stream))
@@ -174,9 +175,8 @@ internal sealed class PeerClient : IDisposable
             AddWriter(writer);
             try
             {
-                string remote = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
                 StatusChanged?.Invoke("Connected to DualCopy peer");
-                DualCopyLog.Info($"Peer session started with {remote}; sending Windows hello/history.");
+                DualCopyLog.Info($"Peer session opened: remote={remote}, local={client.Client.LocalEndPoint}; sending hello with {history.Snapshot().Count} history item(s).");
                 ClipboardEntry? before = history.Newest;
                 await SendToWriterAsync(writer, new { type = "hello", device = "windows", history = history.Snapshot() }, cancellationToken).ConfigureAwait(false);
 
@@ -186,19 +186,21 @@ internal sealed class PeerClient : IDisposable
                     await HandleMessageAsync(line, writer, before, cancellationToken).ConfigureAwait(false);
                     before = history.Newest;
                 }
+                DualCopyLog.Warn($"Peer closed its TCP send side cleanly: remote={remote}; received EOF while waiting for the next JSON line.");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                DualCopyLog.Info($"Peer session stopped locally: remote={remote}, reason=peer restart, settings reconfigure, or application exit.");
             }
             catch (Exception error)
             {
                 StatusChanged?.Invoke($"Peer disconnected: {error.Message}");
-                DualCopyLog.Warn("Peer session ended with a transport or protocol error.", error);
+                DualCopyLog.Warn($"Peer session ended with a transport/protocol failure: remote={remote}.", error);
             }
             finally
             {
                 RemoveWriter(writer);
-                DualCopyLog.Info("Peer session closed.");
+                DualCopyLog.Info($"Peer session closed: remote={remote}.");
             }
         }
     }
@@ -209,7 +211,10 @@ internal sealed class PeerClient : IDisposable
         {
             using JsonDocument document = JsonDocument.Parse(line);
             JsonElement root = document.RootElement;
-            string? type = root.TryGetProperty("type", out JsonElement typeElement) ? typeElement.GetString() : null;
+            string? type = root.TryGetProperty("type", out JsonElement typeElement) && typeElement.ValueKind == JsonValueKind.String
+                ? typeElement.GetString()
+                : null;
+            DualCopyLog.Info($"Peer JSON received: type={type ?? "missing"}, payloadBytes={Encoding.UTF8.GetByteCount(line)}.");
             if (type is "hello" or "history")
             {
                 string property = type == "hello" ? "history" : "entries";
@@ -327,42 +332,80 @@ internal sealed class PeerClient : IDisposable
         }
 
         int sent = 0;
+        int queuedTimeouts = 0;
         foreach (StreamWriter writer in active)
         {
             try
             {
                 using CancellationTokenSource writeTimeout = new(TimeSpan.FromSeconds(15));
-                await SendToWriterAsync(writer, message, writeTimeout.Token).ConfigureAwait(false);
-                sent++;
+                bool completed = await SendToWriterAsync(writer, message, writeTimeout.Token, preserveWriterOnQueueTimeout: true).ConfigureAwait(false);
+                if (completed) sent++;
+                else queuedTimeouts++;
             }
             catch (Exception error)
             {
                 RemoveWriter(writer);
                 try { writer.Dispose(); } catch { }
-                DualCopyLog.Error("Failed writing a clipboard update to a connected peer.", error);
+                DualCopyLog.Error("Clipboard send failed after entering the peer writer; the stream was closed as unsafe to reuse.", error);
             }
         }
-        DualCopyLog.Info($"Clipboard update sent to {sent} connected peer writer(s).");
+        DualCopyLog.Info($"Clipboard update delivery summary: connectedWriters={active.Length}, sent={sent}, queueTimeouts={queuedTimeouts}.");
     }
 
-    private async Task SendToWriterAsync(StreamWriter writer, object message, CancellationToken cancellationToken)
+    private async Task<bool> SendToWriterAsync(StreamWriter writer, object message, CancellationToken cancellationToken, bool preserveWriterOnQueueTimeout = false)
     {
         lock (writersLock)
         {
-            if (!writers.Contains(writer)) return;
+            if (!writers.Contains(writer)) return false;
         }
-        await writerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        string json = JsonSerializer.Serialize(message, JsonOptions);
+        int payloadBytes = Encoding.UTF8.GetByteCount(json) + 1;
+        string messageType = "unknown";
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (document.RootElement.TryGetProperty("type", out JsonElement typeElement) && typeElement.ValueKind == JsonValueKind.String)
+                messageType = typeElement.GetString() ?? "unknown";
+        }
+        catch (JsonException) { }
+
+        SemaphoreSlim peerGate = writerGates.GetValue(writer, _ => new SemaphoreSlim(1, 1));
+        long queuedAt = Stopwatch.GetTimestamp();
+        try
+        {
+            await peerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (preserveWriterOnQueueTimeout && cancellationToken.IsCancellationRequested)
+        {
+            DualCopyLog.Warn($"Clipboard send skipped before socket write: peer writer queue wait exceeded 15 s; type={messageType}, payloadBytes={payloadBytes}, waitMs={Stopwatch.GetElapsedTime(queuedAt).TotalMilliseconds:0}. Connection kept open.");
+            return false;
+        }
+
         try
         {
             lock (writersLock)
             {
-                if (!writers.Contains(writer)) return;
+                if (!writers.Contains(writer)) return false;
             }
-            await writer.WriteLineAsync(JsonSerializer.Serialize(message, JsonOptions).AsMemory(), cancellationToken).ConfigureAwait(false);
+            double queueWaitMs = Stopwatch.GetElapsedTime(queuedAt).TotalMilliseconds;
+            long writeAt = Stopwatch.GetTimestamp();
+            DualCopyLog.Info($"Peer JSON send started: type={messageType}, payloadBytes={payloadBytes}, queueWaitMs={queueWaitMs:0}.");
+            try
+            {
+                await writer.WriteLineAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                DualCopyLog.Error($"Peer socket write was canceled after writer lock acquisition: type={messageType}, payloadBytes={payloadBytes}, writeMs={Stopwatch.GetElapsedTime(writeAt).TotalMilliseconds:0}; this stream will be closed.");
+                throw;
+            }
+            DualCopyLog.Info($"Peer JSON send completed: type={messageType}, payloadBytes={payloadBytes}, writeMs={Stopwatch.GetElapsedTime(writeAt).TotalMilliseconds:0}.");
+            return true;
         }
         finally
         {
-            writerGate.Release();
+            peerGate.Release();
         }
     }
 
@@ -388,6 +431,5 @@ internal sealed class PeerClient : IDisposable
             }
             writers.Clear();
         }
-        writerGate.Dispose();
     }
 }

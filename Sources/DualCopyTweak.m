@@ -205,6 +205,15 @@ static BOOL DualCopyMergeEntries(NSArray *entries) {
     return changed;
 }
 
+static NSString *DualCopyPeerAddress(int clientFD) {
+    struct sockaddr_in remote = {0};
+    socklen_t length = sizeof(remote);
+    if (getpeername(clientFD, (struct sockaddr *)&remote, &length) != 0 || remote.sin_family != AF_INET) return @"unknown";
+    char address[INET_ADDRSTRLEN] = {0};
+    if (inet_ntop(AF_INET, &remote.sin_addr, address, sizeof(address)) == NULL) return @"unknown";
+    return [NSString stringWithFormat:@"%s:%u", address, ntohs(remote.sin_port)];
+}
+
 static BOOL DualCopySendLineLocked(NSData *line, int clientFD) {
     if (gPeerFDs == nil || ![gPeerFDs containsObject:@(clientFD)]) return NO;
 
@@ -213,7 +222,12 @@ static BOOL DualCopySendLineLocked(NSData *line, int clientFD) {
     while (remaining > 0) {
         ssize_t sent = send(clientFD, bytes, remaining, 0);
         if (sent <= 0) {
-            if (errno == EINTR) continue;
+            if (sent < 0 && errno == EINTR) continue;
+            int savedErrno = sent < 0 ? errno : 0;
+            NSString *peer = DualCopyPeerAddress(clientFD);
+            os_log_error(DualCopyLog(), "TCP send failed to %{public}s after %lu/%lu bytes (errno=%d: %{public}s)",
+                         peer.UTF8String ?: "unknown", (unsigned long)(line.length - remaining),
+                         (unsigned long)line.length, savedErrno, savedErrno ? strerror(savedErrno) : "peer closed");
             [gPeerFDs removeObject:@(clientFD)];
             close(clientFD);
             return NO;
@@ -227,7 +241,12 @@ static BOOL DualCopySendLineLocked(NSData *line, int clientFD) {
 static NSData *DualCopyJSONLine(NSDictionary *object) {
     NSError *error = nil;
     NSData *json = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
-    if (json == nil || error != nil) return nil;
+    if (json == nil || error != nil) {
+        os_log_error(DualCopyLog(), "Could not encode protocol JSON (type=%{public}s error=%{public}s)",
+                     [object[@"type"] isKindOfClass:[NSString class]] ? [object[@"type"] UTF8String] : "missing",
+                     error.localizedDescription.UTF8String ?: "unknown");
+        return nil;
+    }
     NSMutableData *line = [json mutableCopy];
     [line appendBytes:"\n" length:1];
     return line;
@@ -276,7 +295,15 @@ static void DualCopySendObject(NSDictionary *object) {
         os_log(DualCopyLog(), "Cannot send clipboard object: no connected Windows peer");
         return;
     }
-    for (NSNumber *peer in peers) DualCopySendLineLocked(line, peer.intValue);
+    NSUInteger sentCount = 0;
+    for (NSNumber *peer in peers) {
+        if (DualCopySendLineLocked(line, peer.intValue)) sentCount++;
+    }
+    NSString *kind = [object[@"kind"] isKindOfClass:[NSString class]] ? object[@"kind"] : @"";
+    NSString *type = [object[@"type"] isKindOfClass:[NSString class]] ? object[@"type"] : @"missing";
+    os_log(DualCopyLog(), "Protocol message send result: type=%{public}s kind=%{public}s sentPeers=%lu totalPeers=%lu lineBytes=%lu",
+           type.UTF8String ?: "missing", kind.UTF8String ?: "", (unsigned long)sentCount,
+           (unsigned long)peers.count, (unsigned long)line.length);
     [gSocketLock unlock];
 }
 
@@ -400,7 +427,12 @@ static void DualCopyApplyRemoteEntry(NSDictionary *entry) {
 }
 
 static void DualCopyHandleObject(NSDictionary *object) {
-    NSString *type = object[@"type"];
+    id rawType = object[@"type"];
+    if (![rawType isKindOfClass:[NSString class]]) {
+        os_log_error(DualCopyLog(), "Rejected peer JSON object with missing or non-string type field");
+        return;
+    }
+    NSString *type = rawType;
     if ([type isEqualToString:@"hello"]) {
         NSArray *entries = object[@"history"];
         NSDictionary *before = DualCopyNewest();
@@ -445,13 +477,32 @@ static void DualCopyReleasePeer(int clientFD) {
 }
 
 static void DualCopyReadClient(int clientFD) {
+    NSString *peer = DualCopyPeerAddress(clientFD);
     DualCopyAddPeer(clientFD);
+    [gSocketLock lock];
+    NSUInteger peerCount = gPeerFDs.count;
+    [gSocketLock unlock];
+    os_log(DualCopyLog(), "Peer session opened: remote=%{public}s, activePeers=%lu; sending iPhone hello/history", peer.UTF8String ?: "unknown", (unsigned long)peerCount);
     DualCopySendObjectToPeer(@{ @"type": @"hello", @"device": @"ios", @"history": [gHistory copy] }, clientFD);
     NSMutableData *pending = [NSMutableData data];
     uint8_t buffer[8192];
+    unsigned long long totalBytes = 0;
+    NSUInteger messageCount = 0;
+    NSString *disconnectReason = @"unknown";
     while (true) {
         ssize_t count = recv(clientFD, buffer, sizeof(buffer), 0);
-        if (count <= 0) break;
+        if (count <= 0) {
+            if (count == 0) {
+                disconnectReason = @"peer closed TCP connection cleanly";
+            } else if (errno == EINTR) {
+                continue;
+            } else {
+                int savedErrno = errno;
+                disconnectReason = [NSString stringWithFormat:@"recv failed (errno=%d: %s)", savedErrno, strerror(savedErrno)];
+            }
+            break;
+        }
+        totalBytes += (unsigned long long)count;
         [pending appendBytes:buffer length:(NSUInteger)count];
         while (true) {
             const uint8_t *bytes = pending.bytes;
@@ -460,18 +511,29 @@ static void DualCopyReadClient(int clientFD) {
             NSUInteger length = (NSUInteger)(newline - bytes);
             NSData *line = [pending subdataWithRange:NSMakeRange(0, length)];
             [pending replaceBytesInRange:NSMakeRange(0, length + 1) withBytes:NULL length:0];
-            NSDictionary *object = [NSJSONSerialization JSONObjectWithData:line options:0 error:nil];
-            if ([object isKindOfClass:[NSDictionary class]]) DualCopyHandleObject(object);
+            id object = [NSJSONSerialization JSONObjectWithData:line options:0 error:nil];
+            if (![object isKindOfClass:[NSDictionary class]]) {
+                os_log_error(DualCopyLog(), "Rejected invalid JSON from peer %{public}s (lineBytes=%lu)", peer.UTF8String ?: "unknown", (unsigned long)length);
+                continue;
+            }
+            messageCount++;
+            id rawType = object[@"type"];
+            NSString *type = [rawType isKindOfClass:[NSString class]] ? rawType : @"missing";
+            os_log(DualCopyLog(), "Peer JSON received: remote=%{public}s type=%{public}s lineBytes=%lu", peer.UTF8String ?: "unknown", type.UTF8String ?: "missing", (unsigned long)length);
+            DualCopyHandleObject(object);
         }
     }
     DualCopyReleasePeer(clientFD);
-    os_log(DualCopyLog(), "Clipboard peer disconnected");
+    os_log(DualCopyLog(), "Peer session ended: remote=%{public}s reason=%{public}s receivedBytes=%llu jsonMessages=%lu bufferedBytes=%lu",
+           peer.UTF8String ?: "unknown", disconnectReason.UTF8String ?: "unknown", totalBytes,
+           (unsigned long)messageCount, (unsigned long)pending.length);
 }
 
 static void DualCopyAcceptLoop(void) {
     gListenFD = socket(AF_INET, SOCK_STREAM, 0);
     if (gListenFD < 0) {
-        os_log_error(DualCopyLog(), "Could not create clipboard socket");
+        int savedErrno = errno;
+        os_log_error(DualCopyLog(), "Could not create clipboard TCP socket (errno=%d: %{public}s)", savedErrno, strerror(savedErrno));
         return;
     }
     int reuse = 1;
@@ -481,8 +543,16 @@ static void DualCopyAcceptLoop(void) {
     address.sin_family = AF_INET;
     address.sin_port = htons(gListenPort);
     address.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(gListenFD, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(gListenFD, 8) != 0) {
-        os_log_error(DualCopyLog(), "Could not listen for Windows clipboard peer on port %u", gListenPort);
+    if (bind(gListenFD, (struct sockaddr *)&address, sizeof(address)) != 0) {
+        int savedErrno = errno;
+        os_log_error(DualCopyLog(), "Could not bind iPhone TCP listener on port %u (errno=%d: %{public}s)", gListenPort, savedErrno, strerror(savedErrno));
+        close(gListenFD);
+        gListenFD = -1;
+        return;
+    }
+    if (listen(gListenFD, 8) != 0) {
+        int savedErrno = errno;
+        os_log_error(DualCopyLog(), "Could not listen on iPhone TCP port %u (errno=%d: %{public}s)", gListenPort, savedErrno, strerror(savedErrno));
         close(gListenFD);
         gListenFD = -1;
         return;
@@ -492,13 +562,17 @@ static void DualCopyAcceptLoop(void) {
         int client = accept(gListenFD, NULL, NULL);
         if (client < 0) {
             if (errno == EINTR) continue;
+            int savedErrno = errno;
+            os_log_error(DualCopyLog(), "iPhone accept() stopped (errno=%d: %{public}s)", savedErrno, strerror(savedErrno));
             break;
         }
         if (!gEnabled) {
+            os_log(DualCopyLog(), "Rejected incoming TCP peer because DualCopy is disabled in settings");
             close(client);
             continue;
         }
-        os_log(DualCopyLog(), "Accepted Windows clipboard peer");
+        NSString *peer = DualCopyPeerAddress(client);
+        os_log(DualCopyLog(), "Accepted incoming TCP peer from %{public}s", peer.UTF8String ?: "unknown");
         DualCopyPrepareSocket(client);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ DualCopyReadClient(client); });
     }
@@ -558,6 +632,9 @@ static void DualCopyConnectLoop(void) {
 
         int client = socket(AF_INET, SOCK_STREAM, 0);
         if (client < 0) {
+            int savedErrno = errno;
+            os_log_error(DualCopyLog(), "Could not create outbound TCP socket for Windows endpoint (errno=%d: %{public}s); retrying in %u s",
+                         savedErrno, strerror(savedErrno), retryDelaySeconds);
             sleep(retryDelaySeconds);
             retryDelaySeconds = MIN(retryDelaySeconds * 2, 60);
             continue;
@@ -568,9 +645,18 @@ static void DualCopyConnectLoop(void) {
         address.sin_family = AF_INET;
         address.sin_port = htons(gComputerPort);
         const char *host = gComputerAddress.UTF8String;
-        if (host == NULL || inet_pton(AF_INET, host, &address.sin_addr) != 1 ||
-            connect(client, (struct sockaddr *)&address, sizeof(address)) != 0) {
-            os_log(DualCopyLog(), "Windows connection attempt failed for %{public}s:%u; retrying in %u s", host ?: "", gComputerPort, retryDelaySeconds);
+        if (host == NULL || inet_pton(AF_INET, host, &address.sin_addr) != 1) {
+            os_log_error(DualCopyLog(), "Saved Windows endpoint is not a valid IPv4 address: %{public}s:%u; reconnect paused for %u s",
+                         host ?: "(empty)", gComputerPort, retryDelaySeconds);
+            close(client);
+            sleep(retryDelaySeconds);
+            retryDelaySeconds = MIN(retryDelaySeconds * 2, 60);
+            continue;
+        }
+        if (connect(client, (struct sockaddr *)&address, sizeof(address)) != 0) {
+            int savedErrno = errno;
+            os_log(DualCopyLog(), "Windows connection attempt to %{public}s:%u failed (errno=%d: %{public}s); retrying in %u s",
+                   host, gComputerPort, savedErrno, strerror(savedErrno), retryDelaySeconds);
             close(client);
             sleep(retryDelaySeconds);
             retryDelaySeconds = MIN(retryDelaySeconds * 2, 60);

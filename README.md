@@ -41,7 +41,7 @@ To publish a self-contained x64 executable on Windows 11:
 powershell -ExecutionPolicy Bypass -File Windows\\Publish.ps1
 ```
 
-**Windows diagnostics:** the companion writes a rotating log to `%LOCALAPPDATA%\\DualCopy\\Logs\\DualCopy.log` and retains one previous log as `DualCopy.log.1`. Open the folder with **Open log folder** in the tray menu. The log includes connection/listener status, clipboard item kinds and sizes, filtering decisions, errors, phone-originated image detection/extraction/send-attempt events, and iPhone acknowledgements or rejection reasons for images Windows sent. Windows receipt and clipboard-apply outcomes are logged separately. iPhone diagnostics travel only over an active peer connection; they are not written to a log file on the phone and cannot reach Windows during a disconnection. Clipboard payload contents are not logged.
+**Windows diagnostics:** the companion writes a rotating log to `%LOCALAPPDATA%\\DualCopy\\Logs\\DualCopy.log` and retains one previous log as `DualCopy.log.1`. Open the folder with **Open log folder** in the tray menu. Logs distinguish retry attempts, orderly peer closes, transport/protocol failures, time spent waiting for a peer writer versus actual socket writes, and iPhone-detected clipboard outcomes; image and file entries include type/size and filter decisions. iPhone peer logs also record endpoints, protocol message types, bytes, errno, and close reason in the iOS unified log. iPhone diagnostics travel only over an active peer connection; they are not written to a log file on the phone and cannot reach Windows during a disconnection. Clipboard payload contents are not logged.
 
 
 ## iPhone build and install
@@ -56,7 +56,7 @@ The iPhone retries its saved Windows endpoint only while its Wi‑Fi interface h
 
 The Windows Configure dialog shows the latest peer status (not a one-off TCP port probe), explains RAW/DNG conversion, and uses non-overlapping controls.
 
-The permanent package identifier is `com.eliastekdin.dualcopy`. Version 0.3.10 adds Wi‑Fi-aware reconnect backoff and Windows Configure dialog fixes.
+The permanent package identifier is `com.eliastekdin.dualcopy`. Version 0.3.11 improves peer send isolation and adds connection diagnostics. Version 0.3.10 adds Wi‑Fi-aware reconnect backoff and Windows Configure dialog fixes.
 
 ## License
 
