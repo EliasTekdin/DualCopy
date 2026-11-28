@@ -270,7 +270,7 @@ internal sealed class MainForm : Form
 
     private void ShowConfigure()
     {
-        using ConfigureForm dialog = new(settings, lastStatus, (address, port) => peer.TestConnectionAsync(address, port));
+        using ConfigureForm dialog = new(settings, lastStatus);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         settings = dialog.SettingsValue.Normalized();
         settings.Save(SettingsPath());
@@ -423,8 +423,7 @@ internal sealed class ConfigureForm : Form
     private readonly CheckBox rawBox = new();
     private readonly CheckBox darkBox = new();
     private readonly Label statusLabel = new();
-    private readonly Button testButton = new();
-    private readonly Func<string, int, Task<string>> testConnection;
+    private readonly ToolTip optionsToolTip = new();
     private readonly DualCopySettings initial;
 
     public DualCopySettings SettingsValue => initial with
@@ -444,16 +443,15 @@ internal sealed class ConfigureForm : Form
         DarkMode = darkBox.Checked
     };
 
-    public ConfigureForm(DualCopySettings settings, string status, Func<string, int, Task<string>> testConnection)
+    public ConfigureForm(DualCopySettings settings, string status)
     {
         initial = settings;
-        this.testConnection = testConnection;
         Text = "DualCopy settings";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = false;
         MaximizeBox = false;
-        ClientSize = new Size(590, 590);
+        ClientSize = new Size(590, 500);
 
         AddLabel("iPhone IP address", 16, 18); addressBox.SetBounds(220, 14, 340, 24); addressBox.Text = settings.Address; Controls.Add(addressBox);
         AddLabel("iPhone listening port", 16, 50); ConfigureNumber(portBox, 220, 46, 65535, settings.Port, 100); AddControl(portBox);
@@ -467,19 +465,13 @@ internal sealed class ConfigureForm : Form
 
         imagesBox.Text = "Sync images"; imagesBox.Checked = settings.SyncImages; imagesBox.SetBounds(16, 312, 180, 24); Controls.Add(imagesBox);
         filesBox.Text = "Sync files"; filesBox.Checked = settings.SyncFiles; filesBox.SetBounds(220, 312, 180, 24); Controls.Add(filesBox);
-        rawBox.Text = "Convert raw images when possible"; rawBox.Checked = settings.ConvertRawImages; rawBox.SetBounds(16, 344, 260, 24); Controls.Add(rawBox);
-        darkBox.Text = "Dark mode"; darkBox.Checked = settings.DarkMode; darkBox.SetBounds(220, 344, 180, 24); Controls.Add(darkBox);
+        rawBox.Text = "Convert RAW/DNG files to images when supported"; rawBox.Checked = settings.ConvertRawImages; rawBox.SetBounds(16, 344, 544, 28); rawBox.AutoSize = false; Controls.Add(rawBox);
+        optionsToolTip.SetToolTip(rawBox, "When a RAW/DNG file can be decoded by the device, convert it to a viewable PNG/JPEG image. Otherwise DualCopy transfers it unchanged as a file.");
+        darkBox.Text = "Dark mode"; darkBox.Checked = settings.DarkMode; darkBox.SetBounds(16, 378, 180, 24); Controls.Add(darkBox);
 
-        statusLabel.SetBounds(16, 388, 544, 38); statusLabel.AutoEllipsis = true; statusLabel.Text = "Status: " + status; Controls.Add(statusLabel);
-        testButton.Text = "Test connection"; testButton.SetBounds(16, 440, 130, 30); testButton.Click += async (_, _) =>
-        {
-            testButton.Enabled = false;
-            statusLabel.Text = "Status: testing connection…";
-            statusLabel.Text = "Status: " + await this.testConnection(addressBox.Text.Trim(), (int)portBox.Value);
-            testButton.Enabled = true;
-        }; Controls.Add(testButton);
-        Button save = new() { Text = "Save", DialogResult = DialogResult.OK, Left = 400, Top = 530, Width = 75 };
-        Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 485, Top = 530, Width = 75 };
+        statusLabel.SetBounds(16, 414, 544, 48); statusLabel.AutoEllipsis = true; statusLabel.Text = "Last connection status: " + status + "  •  Reconnects automatically; the iPhone pauses outbound attempts when Wi-Fi is unavailable."; Controls.Add(statusLabel);
+        Button save = new() { Text = "Save", DialogResult = DialogResult.OK, Left = 400, Top = 462, Width = 75 };
+        Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 485, Top = 462, Width = 75 };
         Controls.Add(save); Controls.Add(cancel); AcceptButton = save; CancelButton = cancel;
         darkBox.CheckedChanged += (_, _) => DualCopyAppearance.Apply(this, darkBox.Checked);
         DualCopyAppearance.Apply(this, settings.DarkMode);
@@ -546,7 +538,7 @@ internal sealed class AboutForm : Form
     public AboutForm()
     {
         Text = "About DualCopy"; StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(390, 210); Padding = new Padding(18);
-        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.9\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
+        Label text = new() { Dock = DockStyle.Fill, Text = "DualCopy\n\nVersion 0.3.10\nShare text, images, and files between iPhone and Windows.\n\nAuthor: Ilyas Tekdin / DualCopy contributors\nGitHub: github.com/EliasTekdin/DualCopy", AutoSize = false };
         Controls.Add(text); Button close = new() { Text = "Close", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Height = 30 }; Controls.Add(close);
     }
 }

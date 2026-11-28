@@ -69,29 +69,6 @@ internal sealed class PeerClient : IDisposable
         }).ConfigureAwait(false);
     }
 
-    public async Task<string> TestConnectionAsync(string targetAddress, int targetPort)
-    {
-        if (string.IsNullOrWhiteSpace(targetAddress))
-        {
-            DualCopyLog.Warn("Connection test could not start: no iPhone IP address was entered.");
-            return "Connection test failed: enter an iPhone IP address.";
-        }
-        try
-        {
-            using TcpClient client = new();
-            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
-            await client.ConnectAsync(targetAddress.Trim(), targetPort, timeout.Token).ConfigureAwait(false);
-            string success = $"Connection test succeeded: {targetAddress.Trim()}:{targetPort}";
-            DualCopyLog.Info(success + ".");
-            return success;
-        }
-        catch (Exception error)
-        {
-            DualCopyLog.Warn($"Connection test failed for {targetAddress.Trim()}:{targetPort}.", error);
-            return $"Connection test failed: {error.Message}";
-        }
-    }
-
     private async Task ListenAsync(CancellationToken cancellationToken)
     {
         TcpListener server = new(IPAddress.Any, port);
@@ -131,14 +108,18 @@ internal sealed class PeerClient : IDisposable
 
     private async Task ConnectAsync(CancellationToken cancellationToken)
     {
+        TimeSpan retryDelay = TimeSpan.FromSeconds(2);
         while (!cancellationToken.IsCancellationRequested)
         {
+            bool connected = false;
             try
             {
                 using TcpClient client = new();
                 await client.ConnectAsync(address, port, cancellationToken).ConfigureAwait(false);
                 ConfigureTcpKeepAlive(client);
                 lastConnectFailure = null;
+                connected = true;
+                retryDelay = TimeSpan.FromSeconds(2);
                 DualCopyLog.Info($"Connected from Windows to iPhone at {address}:{port}.");
                 await HandleConnectionAsync(client, cancellationToken).ConfigureAwait(false);
             }
@@ -153,12 +134,14 @@ internal sealed class PeerClient : IDisposable
                 if (!string.Equals(lastConnectFailure, failure, StringComparison.Ordinal))
                 {
                     lastConnectFailure = failure;
-                    DualCopyLog.Warn($"Windows outgoing connection to iPhone failed for {address}:{port}.", error);
+                    DualCopyLog.Warn($"Windows outgoing connection to iPhone failed for {address}:{port}; retrying in {retryDelay.TotalSeconds:0} s.", error);
                 }
             }
 
-            try { await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false); }
+            TimeSpan delay = connected ? TimeSpan.FromSeconds(2) : retryDelay;
+            try { await Task.Delay(delay, cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
+            if (!connected) retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 60));
         }
     }
 

@@ -7,6 +7,9 @@
 #import <sys/socket.h>
 #import <netinet/tcp.h>
 #import <arpa/inet.h>
+#import <netinet/in.h>
+#import <ifaddrs.h>
+#import <net/if.h>
 #import <unistd.h>
 #import <errno.h>
 #import <string.h>
@@ -501,23 +504,62 @@ static void DualCopyAcceptLoop(void) {
     }
 }
 
+static BOOL DualCopyWiFiAvailable(void) {
+    struct ifaddrs *interfaces = NULL;
+    if (getifaddrs(&interfaces) != 0) return NO;
+
+    BOOL available = NO;
+    for (struct ifaddrs *current = interfaces; current != NULL; current = current->ifa_next) {
+        if (current->ifa_addr == NULL || current->ifa_addr->sa_family != AF_INET ||
+            current->ifa_name == NULL || strcmp(current->ifa_name, "en0") != 0 ||
+            (current->ifa_flags & IFF_UP) == 0 || (current->ifa_flags & IFF_LOOPBACK) != 0) {
+            continue;
+        }
+        const struct sockaddr_in *address = (const struct sockaddr_in *)current->ifa_addr;
+        if (address->sin_addr.s_addr != htonl(INADDR_ANY)) {
+            available = YES;
+            break;
+        }
+    }
+    freeifaddrs(interfaces);
+    return available;
+}
+
 static void DualCopyConnectLoop(void) {
+    unsigned int retryDelaySeconds = 2;
+    BOOL loggedWaitingForWiFi = NO;
     while (true) {
         if (!gEnabled || gComputerAddress.length == 0) {
-            sleep(2);
+            sleep(5);
             continue;
+        }
+        BOOL wifiAvailable = DualCopyWiFiAvailable();
+        if (!wifiAvailable) {
+            if (!loggedWaitingForWiFi) {
+                os_log(DualCopyLog(), "Wi-Fi interface is unavailable; pausing outbound Windows reconnects until Wi-Fi returns");
+                loggedWaitingForWiFi = YES;
+            }
+            sleep(10);
+            continue;
+        }
+        if (loggedWaitingForWiFi) {
+            os_log(DualCopyLog(), "Wi-Fi interface is available; resuming reconnect attempts to the saved Windows endpoint");
+            loggedWaitingForWiFi = NO;
+            retryDelaySeconds = 2;
         }
         [gSocketLock lock];
         BOOL connected = gPeerFDs.count > 0;
         [gSocketLock unlock];
         if (connected) {
+            retryDelaySeconds = 2;
             sleep(2);
             continue;
         }
 
         int client = socket(AF_INET, SOCK_STREAM, 0);
         if (client < 0) {
-            sleep(2);
+            sleep(retryDelaySeconds);
+            retryDelaySeconds = MIN(retryDelaySeconds * 2, 60);
             continue;
         }
         DualCopyPrepareSocket(client);
@@ -528,11 +570,13 @@ static void DualCopyConnectLoop(void) {
         const char *host = gComputerAddress.UTF8String;
         if (host == NULL || inet_pton(AF_INET, host, &address.sin_addr) != 1 ||
             connect(client, (struct sockaddr *)&address, sizeof(address)) != 0) {
-            os_log(DualCopyLog(), "Windows connection attempt failed for %{public}s:%u", host ?: "", gComputerPort);
+            os_log(DualCopyLog(), "Windows connection attempt failed for %{public}s:%u; retrying in %u s", host ?: "", gComputerPort, retryDelaySeconds);
             close(client);
-            sleep(2);
+            sleep(retryDelaySeconds);
+            retryDelaySeconds = MIN(retryDelaySeconds * 2, 60);
             continue;
         }
+        retryDelaySeconds = 2;
         os_log(DualCopyLog(), "Connected to Windows at %{public}s:%u", host, gComputerPort);
         DualCopyReadClient(client);
         sleep(2);

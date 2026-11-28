@@ -52,7 +52,11 @@ After installation, open Settings → Tweaks → DualCopy, set the Windows compu
 
 ## Repository status
 
-The permanent package identifier is `com.eliastekdin.dualcopy`. Version 0.3.9 adds TCP keepalive and bounded Windows writes to recover stale idle connections after long sleep periods.
+The iPhone retries its saved Windows endpoint only while its Wi‑Fi interface has an active address; it pauses outbound attempts on cellular-only connections. Both peers increase failed-connection retry intervals up to 60 seconds, then retry automatically when the saved peer becomes reachable. If the phone stays connected to the home Wi‑Fi while cellular data is enabled, local clipboard traffic uses Wi‑Fi; cellular data alone cannot reach a private home-LAN address without a VPN or other routed connection.
+
+The Windows Configure dialog shows the latest peer status (not a one-off TCP port probe), explains RAW/DNG conversion, and uses non-overlapping controls.
+
+The permanent package identifier is `com.eliastekdin.dualcopy`. Version 0.3.10 adds Wi‑Fi-aware reconnect backoff and Windows Configure dialog fixes.
 
 ## License
 
